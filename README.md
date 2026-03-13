@@ -1,54 +1,148 @@
 # Job Monitor
 
-Lightweight Flask dashboard for monitoring, exploring, and managing Slurm jobs across multiple clusters and local runs.
+Lightweight Flask dashboard for monitoring, exploring, and managing Slurm jobs across multiple clusters and local runs. Includes an MCP server for AI agent integration.
 
 ## Features
 
-- Live multi-cluster board with grouping (`active`, `idle`, `unreachable`, `local`)
-- Job actions: cancel one/all, pin terminal runs, clear failed/completed
-- Log explorer with:
-  - mount-first + SSH fallback reads
-  - nested directory browsing
-  - copy file path + content
-  - syntax-aware rendering for `.json`, `.jsonl`, `.jsonl-async`, `.md`
-  - JSONL record viewer (expand/collapse all, per-record copy)
-- Stats popup for CPU/GPU details
-- SQLite-backed history
-- SSH connection pooling + adaptive polling + prefetch caches
-- Optional SSHFS mount controls from UI/API
+### Live Board
+- Multi-cluster job board grouped by run name (`active`, `idle`, `unreachable`, `local`)
+- Slurm dependency chain detection — parent/child jobs linked with `afterok`, `afterany` badges
+- Topological sorting within groups (parent first, children indented with arrows)
+- Progress percentage display for running jobs
+- Board-pinned terminal jobs (COMPLETED, FAILED, CANCELLED, COMPLETING) persist until manually dismissed
+- Job actions: cancel one/all, dismiss pinned runs, clear failed/completed
+
+### Log Explorer
+- Mount-first reads with SSH fallback
+- Nested directory browsing with lazy-loaded tree
+- Concurrent SSH channels for parallel log/dir fetches
+- Syntax-aware rendering for `.json`, `.jsonl`, `.jsonl-async`, `.md`
+- JSONL record viewer with expand/collapse all and per-record copy
+- Copy file path + content to clipboard
+
+### History
+- SQLite-backed job history with grouped view (related pipeline jobs together)
+- Dependency arrows for child jobs (judge, summarize-results)
+- Pagination by run groups (50 groups per page)
+- Filterable by cluster and job name/ID
+- GPU count and full job name display
+
+### Stats
+- GPU/CPU/memory utilization popup for running jobs
+- TRES-based GPU metrics fallback when direct probing is unavailable
+
+### Settings (UI)
+- Accessible via user button at the bottom of the sidebar
+- Modal with left-nav sections:
+  - **Refresh** — auto-refresh toggle + interval (default: off, on-demand only)
+  - **Mounts** — mount/unmount all or individual clusters via SSHFS
+  - **Clusters** — add/edit/remove cluster configs (hot-reloads without restart)
+  - **Advanced** — SSH timeout, cache freshness, history page size
+  - **Process Filters** — local process include/exclude keywords
+- Backend settings persist to `config.json`, frontend settings to `localStorage`
+
+### MCP Server (AI Agent API)
+- Stdio-based MCP server (`mcp_server.py`) for Cursor and other MCP-compatible agents
+- Tools: `list_jobs`, `get_job_log`, `list_log_files`, `get_job_stats`, `get_history`, `cancel_job`
+- Resource: `jobs://summary` — quick cluster overview
+- Wraps the Flask API — no SSH, no DB access, no duplicate logic
+
+### Performance
+- On-demand fetching: clusters are only polled when a user or agent requests data
+- SSH connection pooling with concurrent channel multiplexing
+- Per-cluster cache with configurable freshness TTL (default: 30s)
+- Prefetch warming for running jobs (log index, first file content, stats)
+- No background polling — login nodes are not contacted when nobody is looking
 
 ## Quick Start
 
 ```bash
 cd ~/job-monitor
-python -m venv .venv
-source .venv/bin/activate
 pip install flask paramiko
+cp config.example.json config.json  # edit with your cluster details
 python app.py
 ```
 
 Open: [http://localhost:7272](http://localhost:7272)
 
+### MCP Server Setup
+
+```bash
+pip install mcp
+```
+
+Add to `~/.cursor/mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "job-monitor": {
+      "command": "python3",
+      "args": ["/path/to/job-monitor/mcp_server.py"]
+    }
+  }
+}
+```
+
+Reload Cursor to activate. Requires the Flask app to be running.
+
 ## Configuration
 
-Environment variables:
+### config.json
+
+Primary configuration file. Editable from the UI Settings panel or directly.
+
+```json
+{
+  "port": 7272,
+  "clusters": {
+    "my-cluster": {
+      "host": "login-node.example.com",
+      "port": 22,
+      "gpu_type": "H100",
+      "remote_root": "/lustre"
+    }
+  },
+  "log_search_bases": ["/lustre/.../users/$USER"],
+  "nemo_run_bases": ["/lustre/.../users/$USER/nemo-run"],
+  "mount_lustre_prefixes": ["lustre/fsw/..."],
+  "local_process_filters": {
+    "include": ["nemo-skills", "python -m nemo_skills"],
+    "exclude": ["cursor", "jupyter"]
+  },
+  "ssh_timeout": 8,
+  "cache_fresh_sec": 30
+}
+```
+
+### Environment Variables
 
 - `JOB_MONITOR_SSH_USER` (default: `$USER`)
 - `JOB_MONITOR_SSH_KEY` (default: `~/.ssh/id_ed25519`)
 - `JOB_MONITOR_MOUNT_MAP` (JSON map of cluster -> mount roots)
 
-Example:
+## API Endpoints
 
-```bash
-export JOB_MONITOR_SSH_USER="$USER"
-export JOB_MONITOR_SSH_KEY="$HOME/.ssh/id_ed25519"
-export JOB_MONITOR_MOUNT_MAP='{"ord":["~/.job-monitor/mounts/ord"],"hsg":["~/.job-monitor/mounts/hsg"]}'
-python app.py
-```
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/jobs` | All clusters with jobs, mounts, dependency info |
+| GET | `/api/jobs/<cluster>` | Force-refresh one cluster |
+| GET | `/api/history?cluster=&limit=` | Job history |
+| GET | `/api/log_files/<cluster>/<job_id>` | Discover log files |
+| GET | `/api/log/<cluster>/<job_id>?path=&lines=` | Read log content |
+| GET | `/api/ls/<cluster>?path=` | Directory listing |
+| GET | `/api/stats/<cluster>/<job_id>` | Job resource stats |
+| GET | `/api/mounts` | Mount status |
+| GET | `/api/settings` | Current configuration |
+| POST | `/api/settings` | Update configuration (hot-reload) |
+| POST | `/api/mount/mount/<cluster>` | Mount one cluster |
+| POST | `/api/mount/unmount/<cluster>` | Unmount one cluster |
+| POST | `/api/cancel/<cluster>/<job_id>` | Cancel a job |
+| POST | `/api/cancel_all/<cluster>` | Cancel all jobs on cluster |
+| POST | `/api/clear_failed/<cluster>` | Dismiss failed pins |
+| POST | `/api/clear_completed/<cluster>` | Dismiss completed pins |
 
 ## SSHFS Mount Helper
-
-The helper script manages per-cluster mounts:
 
 ```bash
 ./scripts/sshfs_logs.sh status
@@ -58,14 +152,7 @@ The helper script manages per-cluster mounts:
 ./scripts/sshfs_logs.sh unmount    # all clusters
 ```
 
-Optional env overrides for script:
-
-- `JOB_MONITOR_SSH_USER`
-- `JOB_MONITOR_SSH_KEY`
-
 ## Systemd (User Service)
-
-Example user unit:
 
 ```ini
 [Unit]
@@ -83,26 +170,15 @@ RestartSec=5
 WantedBy=default.target
 ```
 
-Enable:
-
 ```bash
 systemctl --user daemon-reload
 systemctl --user enable --now job-monitor.service
 ```
 
-## Public Release / Security Checklist
+## Security Notes
 
-- No hard-coded personal home paths in app logic
-- No hard-coded usernames in app logic (uses env/current user)
-- No embedded secrets/tokens/API keys in repository files
+- No hard-coded paths or usernames in app logic
+- No embedded secrets/tokens in repository files
 - SSH key path is configurable via env
-- Prefer key-based auth and avoid storing passwords
-- Add `.gitignore` for runtime artifacts:
-  - `history.db`
-  - `__pycache__/`
-  - local logs/tmp outputs
-
-## Notes
-
-- Some clusters may block `sshfs`/SFTP. In that case, UI shows `ssh-only` and falls back to SSH reads.
-- Local-process logs depend on whether the process writes to files or streams.
+- `config.json` may contain hostnames — add to `.gitignore` if needed
+- `.gitignore` should include: `history.db`, `__pycache__/`, `config.json`
