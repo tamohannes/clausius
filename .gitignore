@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local runtime data
+history.db
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs and temp files
+*.log
+*.tmp
+*.swp
+*.swo
+
+# Local environment files
+.env
+.env.*
+
+# Site-specific config (copy config.example.json to config.json)
+config.json
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+history.db.bak-*
+
+# IDE
+.vscode/
+.idea/
