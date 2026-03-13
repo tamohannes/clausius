@@ -46,9 +46,10 @@ body {
   background: rgba(255,255,255,0.92);
   backdrop-filter: blur(8px);
   position: sticky; top: 0; height: 100vh; overflow-y: auto;
-  padding: 14px 12px 20px;
+  padding: 14px 12px 0;
   transition: width 0.2s ease, padding 0.2s ease;
   z-index: 210;
+  display: flex; flex-direction: column;
 }
 .nav-splitter {
   width: 8px;
@@ -82,7 +83,7 @@ body {
 .nav-title {
   font-family: var(--mono); font-size: 14px; font-weight: 600;
   color: var(--accent); letter-spacing: -0.4px;
-  padding: 6px 44px 10px;
+  padding: 18px 44px 16px;
   text-align: center;
 }
 .nav-title em { color: var(--muted); font-style: normal; font-weight: 300; }
@@ -106,6 +107,7 @@ body {
   font-family: var(--mono); font-size: 11px;
   background: var(--bg); border: 1px solid var(--border);
   border-radius: 20px; padding: 3px 10px; color: var(--muted);
+  text-align: center;
 }
 .countdown-badge b { color: var(--accent); }
 
@@ -116,19 +118,39 @@ body {
   transition: all 0.15s;
 }
 .btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
-.btn-tab { border-radius: 6px; }
-.btn-tab.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+
+/* ── View tabs ── */
+.nav-tabs-wrap {
+  display: flex; gap: 0;
+  border: 1px solid var(--border); border-radius: 8px;
+  overflow: hidden; margin-bottom: 10px;
+}
+.nav-tab {
+  flex: 1; text-align: center;
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  padding: 7px 0; cursor: pointer;
+  border: none; background: var(--surface);
+  color: var(--muted); transition: all 0.15s;
+}
+.nav-tab:not(:last-child) { border-right: 1px solid var(--border); }
+.nav-tab:hover { background: var(--bg); color: var(--text); }
+.nav-tab.active {
+  background: var(--accent); color: #fff;
+  font-weight: 600;
+}
 
 /* ── Pills / summary ── */
-.summary {
-  display: flex; gap: 8px; flex-wrap: wrap;
+.stat-list { display: flex; flex-direction: column; gap: 2px; }
+.stat-row {
+  display: flex; align-items: center; gap: 8px;
+  font-family: var(--mono); font-size: 12px;
+  padding: 3px 4px; border-radius: 5px;
+  transition: background 0.1s;
 }
-.pill {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-family: var(--mono); font-size: 11px;
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 20px; padding: 4px 12px;
-}
+.stat-row:hover { background: var(--bg); }
+.stat-val { font-weight: 600; color: var(--text); min-width: 22px; text-align: right; }
+.stat-lbl { color: var(--muted); font-size: 11px; }
+.stat-divider { height: 1px; background: var(--border); margin: 4px 0; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .dot-green  { background: var(--green); }
 .dot-amber  { background: var(--amber); }
@@ -301,6 +323,21 @@ tbody tr.pinned-failed-row:hover { background: #fff5f5; }
 tbody tr.pinned-completed-row { background: #f7fcf8; }
 tbody tr.pinned-completed-row:hover { background: #eefaf0; }
 
+/* Dependency chain indicators */
+.dep-arrow {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  margin-right: 2px;
+}
+.dep-badge {
+  display: inline-block;
+  font-family: var(--mono); font-size: 9px;
+  padding: 1px 5px; border-radius: 4px;
+  background: #f0eeff; border: 1px solid #d4ccff; color: #6b5ce7;
+  margin-left: 4px; vertical-align: middle;
+  white-space: nowrap; cursor: default;
+}
+.dep-indent { display: inline-block; }
+
 /* Grouped runs within a cluster card */
 .group-head-row td {
   font-family: var(--mono);
@@ -365,6 +402,20 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 .history-filter select:focus, .history-filter input:focus { border-color: var(--accent); }
 
 .history-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+.hist-pagination {
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 10px 0 4px;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.hist-pagination button {
+  font-family: var(--mono); font-size: 11px;
+  padding: 3px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--muted); cursor: pointer; transition: all 0.15s;
+}
+.hist-pagination button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.hist-pagination button:disabled { opacity: 0.4; cursor: default; }
+.hist-pagination .page-info { min-width: 80px; text-align: center; }
 
 /* ── Log modal ── */
 .modal-overlay {
@@ -671,6 +722,138 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 .toast.ok    { border-color: var(--green-bd); color: var(--green); }
 .toast.error { border-color: var(--red-bd);   color: var(--red); }
 @keyframes slideUp { from { transform: translateY(8px); opacity:0; } to { transform: translateY(0); opacity:1; } }
+
+/* ── Settings panel ── */
+.settings-sub {
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px; margin-bottom: 8px; background: var(--surface2);
+}
+.settings-sub-label {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted);
+  margin-bottom: 6px;
+}
+.settings-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-family: var(--mono); font-size: 11px; color: var(--text);
+  margin-bottom: 4px;
+}
+.settings-row input[type="number"],
+.settings-row input[type="text"] {
+  font-family: var(--mono); font-size: 11px;
+  padding: 3px 6px; border-radius: 5px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); outline: none;
+}
+.settings-row input[type="number"]:focus,
+.settings-row input[type="text"]:focus { border-color: var(--accent); }
+.settings-row input[type="checkbox"] { accent-color: var(--accent); }
+.cluster-edit-card {
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; margin-bottom: 6px; background: #fff;
+}
+.cluster-edit-card .ce-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 4px;
+}
+.cluster-edit-card .ce-name {
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+}
+.cluster-edit-card .ce-remove {
+  font-size: 12px; cursor: pointer; color: var(--muted);
+  border: none; background: none; padding: 0 4px;
+}
+.cluster-edit-card .ce-remove:hover { color: var(--red); }
+.cluster-edit-card .ce-fields {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
+}
+.cluster-edit-card .ce-field {
+  display: flex; flex-direction: column; gap: 1px;
+}
+.cluster-edit-card .ce-field span {
+  font-family: var(--mono); font-size: 9px; color: var(--muted); text-transform: uppercase;
+}
+.cluster-edit-card .ce-field input {
+  font-family: var(--mono); font-size: 10px;
+  padding: 2px 5px; border-radius: 4px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); outline: none;
+}
+.cluster-edit-card .ce-field input:focus { border-color: var(--accent); }
+
+/* ── User button (sticky bottom of sidebar) ── */
+.nav-user-btn {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px;
+  margin-top: auto;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s;
+  flex-shrink: 0;
+  background: var(--surface);
+}
+.nav-user-btn:hover { background: var(--accent-bg); }
+.nav-user-avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  background: var(--accent); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  flex-shrink: 0;
+}
+.nav-user-name {
+  font-family: var(--mono); font-size: 12px; font-weight: 500;
+  color: var(--text); flex: 1;
+}
+.nav-user-hint {
+  font-family: var(--mono); font-size: 10px;
+  color: var(--muted);
+}
+
+/* ── Settings modal ── */
+.settings-overlay {
+  display: none; position: fixed; inset: 0;
+  background: rgba(0,0,0,0.25); z-index: 530;
+  align-items: center; justify-content: center;
+}
+.settings-overlay.open { display: flex; }
+.settings-modal {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+  width: min(1220px, 96vw); height: min(820px, 90vh);
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.settings-modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  background: var(--surface2); flex-shrink: 0;
+}
+.settings-modal-title { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.settings-modal-sub { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 1px; }
+.settings-layout { display: flex; flex: 1; overflow: hidden; }
+.settings-nav {
+  width: 190px; flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  background: var(--surface2);
+  padding: 8px 0; overflow-y: auto;
+}
+.settings-nav-item {
+  font-family: var(--mono); font-size: 11px;
+  padding: 7px 14px; cursor: pointer;
+  color: var(--muted); transition: all 0.12s;
+  border-left: 2px solid transparent;
+}
+.settings-nav-item:hover { color: var(--text); background: var(--bg); }
+.settings-nav-item.active {
+  color: var(--accent); background: var(--accent-bg);
+  border-left-color: var(--accent); font-weight: 500;
+}
+.settings-content { flex: 1; padding: 16px; overflow-y: auto; }
+.settings-section { display: none; }
+.settings-section.active { display: block; }
+@media (max-width: 560px) {
+  .settings-nav { width: 110px; }
+  .settings-nav-item { font-size: 10px; padding: 6px 10px; }
+}
 </style>
 </head>
 <body>
@@ -679,31 +862,28 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 <div class="app-shell" id="app-shell">
   <aside class="side-nav" id="side-nav">
     <div class="nav-title">cluster<em>/</em>monitor</div>
-    <div class="nav-section">
-      <div class="nav-section-label">Navigation & Refresh</div>
-      <div class="header-right">
-        <div class="countdown-badge">refresh in <b id="cd">30</b>s</div>
-        <button class="btn" onclick="refreshNow()">↻ refresh</button>
-        <button class="btn btn-tab" id="tab-live" onclick="showTab('live')">Live</button>
-        <button class="btn btn-tab" id="tab-history" onclick="showTab('history')">History</button>
-      </div>
+    <div class="nav-tabs-wrap">
+      <button class="nav-tab active" id="tab-live" onclick="showTab('live')">Live</button>
+      <button class="nav-tab" id="tab-history" onclick="showTab('history')">History</button>
     </div>
+    <div class="countdown-badge" style="display:none">refresh in <b id="cd">30</b>s</div>
     <div class="nav-section">
       <div class="nav-section-label">Summary</div>
-      <div class="summary">
-        <div class="pill"><span class="dot dot-green"></span><span id="s-running">— running</span></div>
-        <div class="pill"><span class="dot dot-amber"></span><span id="s-pending">— pending</span></div>
-        <div class="pill"><span class="dot dot-red"></span><span id="s-failed">— failed</span></div>
-        <div class="pill"><span class="dot dot-muted"></span><span id="s-clusters">loading…</span></div>
+      <div class="stat-list" id="stat-list">
+        <div class="stat-row"><span class="dot dot-green"></span><span class="stat-val" id="s-running">—</span><span class="stat-lbl">running</span></div>
+        <div class="stat-row"><span class="dot dot-amber"></span><span class="stat-val" id="s-pending">—</span><span class="stat-lbl">pending</span></div>
+        <div class="stat-row"><span class="dot dot-red"></span><span class="stat-val" id="s-failed">—</span><span class="stat-lbl">failed</span></div>
+        <div class="stat-row"><span class="dot dot-muted"></span><span class="stat-val" id="s-completed">—</span><span class="stat-lbl">completed</span></div>
+        <div class="stat-divider"></div>
+        <div class="stat-row"><span class="dot" style="background:var(--accent)"></span><span class="stat-val" id="s-gpus">—</span><span class="stat-lbl">GPUs in use</span></div>
+        <div class="stat-row"><span class="dot" style="background:var(--cyan)"></span><span class="stat-val" id="s-clusters">—</span><span class="stat-lbl">clusters up</span></div>
+        <div class="stat-row"><span class="dot" style="background:var(--green)"></span><span class="stat-val" id="s-mounted">—</span><span class="stat-lbl">mounted</span></div>
       </div>
     </div>
-    <div class="nav-section">
-      <div class="nav-section-label">Mount Controls</div>
-      <div class="header-right" style="margin-bottom:8px">
-        <button class="btn" onclick="mountAll()">mount all</button>
-        <button class="btn" onclick="unmountAll()">unmount all</button>
-      </div>
-      <div id="mount-panel" class="mount-panel"></div>
+    <div class="nav-user-btn" onclick="openSettingsModal()">
+      <span class="nav-user-avatar">{{ username[0] | upper }}</span>
+      <span class="nav-user-name">{{ username }}</span>
+      <span class="nav-user-hint">settings</span>
     </div>
   </aside>
   <div class="nav-splitter" id="nav-splitter" title="Drag to resize sidebar"></div>
@@ -730,11 +910,12 @@ tr.group-bg-3:hover td { background: #eef5ff; }
           <table id="hist-table">
             <thead><tr>
               <th>Cluster</th><th>Job ID</th><th>Name</th>
-              <th>State</th><th>Start</th><th>End</th><th>Elapsed</th><th></th>
+              <th>State</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th></th>
             </tr></thead>
             <tbody id="hist-body"></tbody>
           </table>
         </div>
+        <div class="hist-pagination" id="hist-pagination"></div>
       </main>
     </div>
   </div>
@@ -780,6 +961,93 @@ tr.group-bg-3:hover td { background: #eef5ff; }
     </div>
     <div class="stats-body" id="stats-body">
       <div class="log-loading">Loading stats…</div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings modal -->
+<div class="settings-overlay" id="settings-overlay" onclick="if(event.target===this)closeSettingsModal()">
+  <div class="settings-modal">
+    <div class="settings-modal-head">
+      <div>
+        <div class="settings-modal-title">Settings</div>
+        <div class="settings-modal-sub">{{ username }} · cluster/monitor</div>
+      </div>
+      <button class="modal-close" onclick="closeSettingsModal()">×</button>
+    </div>
+    <div class="settings-layout">
+      <!-- Left nav -->
+      <div class="settings-nav">
+        <div class="settings-nav-item active" data-section="sec-refresh" onclick="showSettingsSection(this)">Refresh</div>
+        <div class="settings-nav-item" data-section="sec-mounts" onclick="showSettingsSection(this)">Mounts</div>
+        <div class="settings-nav-item" data-section="sec-clusters" onclick="showSettingsSection(this)">Clusters</div>
+        <div class="settings-nav-item" data-section="sec-advanced" onclick="showSettingsSection(this)">Advanced</div>
+        <div class="settings-nav-item" data-section="sec-filters" onclick="showSettingsSection(this)">Process Filters</div>
+      </div>
+      <!-- Right content -->
+      <div class="settings-content">
+
+        <div class="settings-section active" id="sec-refresh">
+          <div class="settings-sub-label">Refresh Behavior</div>
+          <label class="settings-row">
+            <span>Auto-refresh live table</span>
+            <input type="checkbox" id="set-autorefresh" onchange="saveLocalSettings()">
+          </label>
+          <label class="settings-row">
+            <span>Interval (sec)</span>
+            <input type="number" id="set-refresh-interval" min="5" max="600" value="30" style="width:60px" onchange="saveLocalSettings()">
+          </label>
+        </div>
+
+        <div class="settings-section" id="sec-mounts">
+          <div class="settings-sub-label">Mount Controls</div>
+          <div class="header-right" style="margin-bottom:10px">
+            <button class="btn" onclick="mountAll()">mount all</button>
+            <button class="btn" onclick="unmountAll()">unmount all</button>
+          </div>
+          <div id="mount-panel" class="mount-panel"></div>
+        </div>
+
+        <div class="settings-section" id="sec-clusters">
+          <div class="settings-sub-label">Cluster Configuration</div>
+          <div id="cluster-editor" style="max-height:55vh;overflow-y:auto"></div>
+          <div style="display:flex;gap:5px;margin-top:8px">
+            <button class="btn" style="flex:1" onclick="addClusterRow()">+ add cluster</button>
+            <button class="btn" style="flex:1" onclick="saveClusters()">save clusters</button>
+          </div>
+        </div>
+
+        <div class="settings-section" id="sec-advanced">
+          <div class="settings-sub-label">Advanced</div>
+          <label class="settings-row">
+            <span>SSH timeout (sec)</span>
+            <input type="number" id="set-ssh-timeout" min="2" max="60" value="8" style="width:60px">
+          </label>
+          <label class="settings-row">
+            <span>Cache freshness (sec)</span>
+            <input type="number" id="set-cache-fresh" min="5" max="600" value="30" style="width:60px">
+          </label>
+          <label class="settings-row">
+            <span>History page size</span>
+            <input type="number" id="set-hist-pagesize" min="5" max="500" value="50" style="width:60px" onchange="saveLocalSettings()">
+          </label>
+          <button class="btn" style="margin-top:8px;width:100%" onclick="saveAdvancedSettings()">save</button>
+        </div>
+
+        <div class="settings-section" id="sec-filters">
+          <div class="settings-sub-label">Local Process Filters</div>
+          <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px">
+            <span>Include (comma-separated)</span>
+            <input type="text" id="set-proc-include" style="width:100%" placeholder="nemo-skills, nemo_skills, ...">
+          </label>
+          <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px">
+            <span>Exclude (comma-separated)</span>
+            <input type="text" id="set-proc-exclude" style="width:100%" placeholder="cursor, jupyter, ...">
+          </label>
+          <button class="btn" style="margin-top:8px;width:100%" onclick="saveProcessFilters()">save</button>
+        </div>
+
+      </div>
     </div>
   </div>
 </div>
@@ -852,6 +1120,29 @@ function isCompletedState(s) {
   return (s || '').toUpperCase().startsWith('COMPLETED');
 }
 
+const DEP_TYPE_DESC = {
+  afterany:   'runs after parent finishes (any exit status)',
+  afterok:    'runs only if parent succeeds (exit 0)',
+  afternotok: 'runs only if parent fails (non-zero exit)',
+  aftercorr:  'runs after corresponding parent task completes',
+  after:      'runs after parent starts',
+  afterburstbuffer: 'runs after parent burst buffer completes',
+};
+
+function depBadgeHtml(job, byId) {
+  const deps = job.dep_details || [];
+  if (!deps.length) return '';
+  const parts = deps.map(d => {
+    const parentName = byId && byId[d.job_id] ? byId[d.job_id].name : '';
+    const shortType = d.type.replace('after', '');
+    const typeDesc = DEP_TYPE_DESC[d.type] || d.type;
+    const namePart = parentName ? ` (${parentName})` : '';
+    const tip = `${d.type}:${d.job_id}${namePart} — ${typeDesc}`;
+    return `<span class="dep-badge" title="${tip}">${shortType}:${d.job_id}</span>`;
+  });
+  return parts.join(' ');
+}
+
 function fmtTime(s) {
   if (!s || s === 'N/A' || s === 'Unknown') return '—';
   // Slurm gives "2026-03-09T13:22:55" or "2026-03-09 13:22:55"
@@ -882,11 +1173,112 @@ function parseGpus(nodes, gres) {
 function groupKeyForJob(name) {
   const n = (name || '').trim();
   if (!n) return 'misc';
-  // Keep related eval runs together (e.g., eval-gpqa, eval-gpqa-summarize-results)
   const evalMatch = n.match(/^(eval-[a-z0-9_]+)/i);
   if (evalMatch) return evalMatch[1].toLowerCase();
-  // Strip common rs suffixes (output-rs0 / -rs0)
   return n.replace(/(?:-|_)rs\d+\b/i, '').toLowerCase();
+}
+
+function groupJobsByDependency(jobs) {
+  // Build dependency-aware groups: if A -> B -> C form a chain,
+  // they belong in one group regardless of name prefix.
+  const byId = {};
+  for (const j of jobs) byId[j.jobid] = j;
+
+  // Union-Find to merge dependency-connected jobs into one group.
+  const parent = {};
+  function find(x) {
+    if (!(x in parent)) parent[x] = x;
+    while (parent[x] !== x) { parent[x] = parent[parent[x]]; x = parent[x]; }
+    return x;
+  }
+  function union(a, b) { parent[find(a)] = find(b); }
+
+  for (const j of jobs) {
+    for (const pid of (j.depends_on || [])) {
+      if (byId[pid]) union(j.jobid, pid);
+    }
+  }
+
+  // Also union by name-prefix for jobs without explicit deps.
+  const nameGroups = {};
+  for (const j of jobs) {
+    const key = groupKeyForJob(j.name);
+    if (!nameGroups[key]) nameGroups[key] = [];
+    nameGroups[key].push(j.jobid);
+  }
+  for (const ids of Object.values(nameGroups)) {
+    for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+  }
+
+  // Collect groups.
+  const groups = {};
+  for (const j of jobs) {
+    const root = find(j.jobid);
+    if (!groups[root]) groups[root] = [];
+    groups[root].push(j);
+  }
+
+  // Topological sort within each group (parents before children).
+  for (const [root, grp] of Object.entries(groups)) {
+    groups[root] = topoSortJobs(grp);
+  }
+
+  // Derive a readable label for each group.
+  const result = [];
+  for (const grp of Object.values(groups)) {
+    const rootJob = grp.find(j => !(j.depends_on || []).length) || grp[0];
+    const label = groupKeyForJob(rootJob.name);
+    result.push([label, grp]);
+  }
+  result.sort((a, b) => b[1].length - a[1].length);
+  return result;
+}
+
+function topoSortJobs(jobs) {
+  if (jobs.length <= 1) return jobs;
+  const idSet = new Set(jobs.map(j => j.jobid));
+  const byId = {};
+  for (const j of jobs) byId[j.jobid] = j;
+
+  // In-degree within this group.
+  const inDeg = {};
+  for (const j of jobs) {
+    inDeg[j.jobid] = 0;
+  }
+  for (const j of jobs) {
+    for (const pid of (j.depends_on || [])) {
+      if (idSet.has(pid)) inDeg[j.jobid]++;
+    }
+  }
+
+  // Kahn's algorithm.
+  const queue = jobs.filter(j => inDeg[j.jobid] === 0)
+    .sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state] || a.jobid.localeCompare(b.jobid));
+  const sorted = [];
+  while (queue.length) {
+    const j = queue.shift();
+    sorted.push(j);
+    for (const cid of (j.dependents || [])) {
+      if (!idSet.has(cid)) continue;
+      inDeg[cid]--;
+      if (inDeg[cid] === 0) queue.push(byId[cid]);
+    }
+  }
+  // Append any remaining (cycle protection).
+  for (const j of jobs) {
+    if (!sorted.includes(j)) sorted.push(j);
+  }
+  return sorted;
+}
+
+function depthInGroup(job, byId, idSet, memo) {
+  if (memo[job.jobid] !== undefined) return memo[job.jobid];
+  let d = 0;
+  for (const pid of (job.depends_on || [])) {
+    if (idSet.has(pid) && byId[pid]) d = Math.max(d, depthInGroup(byId[pid], byId, idSet, memo) + 1);
+  }
+  memo[job.jobid] = d;
+  return d;
 }
 
 function showTab(tab) {
@@ -991,20 +1383,29 @@ function setupSidebarResizer() {
 
 // ── Summary ──
 function updateSummary(data) {
-  let running = 0, pending = 0, failed = 0, reach = 0;
-  for (const [, d] of Object.entries(data)) {
-    if (d.status === 'ok') { reach++; }
+  let running = 0, pending = 0, failed = 0, completed = 0, reach = 0, totalGpus = 0, mounted = 0;
+  for (const [name, d] of Object.entries(data)) {
+    if (d.status === 'ok') reach++;
+    if (d.mount && d.mount.mounted) mounted++;
     for (const j of d.jobs || []) {
       const s = (j.state || '').toUpperCase();
-      if (s === 'RUNNING') running++;
+      if (s === 'RUNNING' || s === 'COMPLETING') {
+        running++;
+        const gm = (j.gres || '').match(/gpu[^:]*:(?:[^:]+:)?(\d+)/);
+        if (gm) totalGpus += (parseInt(gm[1]) || 0) * (parseInt(j.nodes) || 1);
+      }
       else if (s === 'PENDING') pending++;
       else if (s.includes('FAIL')) failed++;
+      else if (s.startsWith('COMPLETED')) completed++;
     }
   }
-  document.getElementById('s-running').textContent = `${running} running`;
-  document.getElementById('s-pending').textContent = `${pending} pending`;
-  document.getElementById('s-failed').textContent  = `${failed} failed`;
-  document.getElementById('s-clusters').textContent = `${reach}/${Object.keys(CLUSTERS).length} clusters up`;
+  document.getElementById('s-running').textContent = running;
+  document.getElementById('s-pending').textContent = pending;
+  document.getElementById('s-failed').textContent = failed;
+  document.getElementById('s-completed').textContent = completed;
+  document.getElementById('s-gpus').textContent = totalGpus;
+  document.getElementById('s-clusters').textContent = `${reach}/${Object.keys(CLUSTERS).length}`;
+  document.getElementById('s-mounted').textContent = `${mounted}/${reach > 0 ? reach - (data.local ? 1 : 0) : 0}`;
 }
 
 function renderMountPanel(data) {
@@ -1040,14 +1441,13 @@ function renderMountPanel(data) {
 }
 
 function computeRefreshIntervalSec(data) {
-  // Prioritize fast updates when there is active/pending work.
   for (const [, d] of Object.entries(data || {})) {
     for (const j of d.jobs || []) {
       const s = (j.state || '').toUpperCase();
-      if (s === 'RUNNING' || s === 'PENDING' || s === 'COMPLETING') return 8;
+      if (s === 'RUNNING' || s === 'PENDING' || s === 'COMPLETING') return 30;
     }
   }
-  return 25;
+  return 60;
 }
 
 // ── Cluster card rendering ──
@@ -1074,16 +1474,17 @@ function renderCard(name, data) {
   } else if (jobs.length === 0) {
     body = `<div class="no-jobs">no active jobs</div>`;
   } else {
-    const grouped = {};
-    for (const j of jobs) {
-      const key = groupKeyForJob(j.name);
-      if (!grouped[key]) grouped[key] = [];
-      grouped[key].push(j);
-    }
-    const groupEntries = Object.entries(grouped).sort((a, b) => b[1].length - a[1].length);
+    const groupEntries = groupJobsByDependency(jobs);
 
     const rows = groupEntries.map(([gk, groupJobs], gidx) => {
       const groupLabel = `${gk} · ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}`;
+
+      // Compute dependency depth for indentation.
+      const idSet = new Set(groupJobs.map(j => j.jobid));
+      const byId = {};
+      for (const j of groupJobs) byId[j.jobid] = j;
+      const depthMemo = {};
+
       const groupRows = groupJobs.map(j => {
       const gpuStr = parseGpus(j.nodes, j.gres);
       const resourceCell = gpuStr
@@ -1092,22 +1493,31 @@ function renderCard(name, data) {
       const isPinned = j._pinned;
       const st = (j.state || '').toUpperCase();
       const pinKind = isPinned ? (isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
+      const depth = depthInGroup(j, byId, idSet, depthMemo);
       const rowClass = `${isPinned ? 'pinned-row' : ''} ${pinKind} group-bg-${gidx % 4}`;
       const startTime = fmtTime(j.started_local || j.started || j.start);
       const endTime   = isPinned ? fmtTime(j.ended_local || j.ended_at) : '—';
       const safeName = (j.name || '').replace(/'/g, "\\'");
-      const logBtn = `<button class="action-btn log-btn" onclick="openLog('${name}','${j.jobid}','${safeName}')">log</button>`;
-      const statsBtn = name === 'local'
+      const isPending = st === 'PENDING';
+      const logBtn = isPending ? '' : `<button class="action-btn log-btn" onclick="openLog('${name}','${j.jobid}','${safeName}')">log</button>`;
+      const statsBtn = isPending ? '' : (name === 'local'
         ? `<button class="action-btn" title="Stats not available for local process mode" onclick="toast('Stats popup is for Slurm cluster jobs','error')">stats</button>`
-        : `<button class="action-btn log-btn" onclick="openStats('${name}','${j.jobid}','${safeName}')">stats</button>`;
+        : `<button class="action-btn log-btn" onclick="openStats('${name}','${j.jobid}','${safeName}')">stats</button>`);
       const quickActions = `${logBtn} ${statsBtn}`;
       const tailAction = isPinned
         ? `<button class="action-btn" title="dismiss" onclick="dismissFailed('${name}','${j.jobid}')">✕</button>`
         : `<button class="action-btn" onclick="cancelJob('${name}','${j.jobid}')">cancel</button>`;
+
+      // Dependency badge for jobs waiting on a parent.
+      const depBadge = depBadgeHtml(j, byId);
+      const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
+      const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
+      const nameCell = `${indent}${depArrow}<span title="${j.name}">${j.name}</span>`;
+
       return `<tr class="${rowClass}">
         <td class="dim">${j.jobid}</td>
-        <td class="bold" title="${j.name}">${j.name}</td>
-        <td>${stateChip(j.state, j.progress)}</td>
+        <td class="bold">${nameCell}</td>
+        <td>${stateChip(j.state, j.progress)} ${depBadge}</td>
         <td>${quickActions}</td>
         <td class="dim">${startTime}</td>
         <td class="dim">${endTime}</td>
@@ -1281,7 +1691,7 @@ async function prefetchVisibleJobs(data) {
       for (const j of (d.jobs || [])) {
         const s = (j.state || '').toUpperCase();
         if (j._pinned) continue;
-        if (s === 'RUNNING' || s === 'PENDING' || s === 'COMPLETING') {
+        if (s === 'RUNNING' || s === 'COMPLETING') {
           jobs.push({ cluster, job_id: j.jobid });
         }
       }
@@ -1327,8 +1737,10 @@ async function fetchAll() {
     renderGrid(allData);
     updateSummary(allData);
     renderMountPanel(allData);
-    refreshIntervalSec = computeRefreshIntervalSec(allData);
-    if (countdown > refreshIntervalSec) countdown = refreshIntervalSec;
+    // Only auto-refresh if user enabled it in settings.
+    if (refreshIntervalSec > 0) {
+      if (countdown > refreshIntervalSec) countdown = refreshIntervalSec;
+    }
     prefetchVisibleJobs(allData);
   } catch (e) {
     toast('Failed to fetch jobs', 'error');
@@ -1355,46 +1767,114 @@ async function refreshCluster(name) {
 }
 
 // ── History ──
+let HIST_GROUPS_PER_PAGE = 50;
+let histPage = 0;
+let histGroups = [];
+
 async function loadHistory() {
   const cluster = document.getElementById('hist-cluster').value;
   try {
-    const res = await fetch(`/api/history?cluster=${cluster}&limit=300`);
+    const res = await fetch(`/api/history?cluster=${cluster}&limit=500`);
     historyData = await res.json();
-    renderHistory(historyData);
+    histPage = 0;
+    _buildHistGroups(historyData);
+    _renderHistPage();
   } catch (e) {
     toast('Failed to load history', 'error');
   }
 }
 
-function renderHistory(rows) {
+function historyGroupKey(r) {
+  const n = (r.job_name || '').trim();
+  if (!n) return `${r.cluster}:misc`;
+  const evalMatch = n.match(/^(eval-[a-z0-9_]+)/i);
+  const base = evalMatch ? evalMatch[1].toLowerCase() : n.replace(/(?:-|_)rs\d+\b/i, '').replace(/(?:-|_)(?:judge|summarize[-_]results?).*$/i, '').toLowerCase();
+  return `${r.cluster}:${base}`;
+}
+
+function _buildHistGroups(rows) {
+  histGroups = [];
+  const groupMap = {};
+  for (const r of rows) {
+    const key = historyGroupKey(r);
+    if (!(key in groupMap)) {
+      groupMap[key] = histGroups.length;
+      histGroups.push({ key, label: key.split(':').slice(1).join(':'), cluster: r.cluster, rows: [] });
+    }
+    histGroups[groupMap[key]].rows.push(r);
+  }
+}
+
+function _isChildName(name) {
+  return /(?:judge|summarize)/i.test(name || '');
+}
+
+function _renderHistPage() {
   const tbody = document.getElementById('hist-body');
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8" style="padding:20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted)">no history yet</td></tr>`;
+  const totalGroups = histGroups.length;
+  const totalPages = Math.max(1, Math.ceil(totalGroups / HIST_GROUPS_PER_PAGE));
+  if (histPage >= totalPages) histPage = totalPages - 1;
+  if (histPage < 0) histPage = 0;
+
+  if (!totalGroups) {
+    tbody.innerHTML = `<tr><td colspan="9" style="padding:20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted)">no history yet</td></tr>`;
+    document.getElementById('hist-pagination').innerHTML = '';
     return;
   }
-  tbody.innerHTML = rows.map(r => {
-    const ended = fmtTime(r.ended_local || r.ended_at);
-    const started = fmtTime(r.started_local || r.started);
-    const logBtn = `<button class="action-btn log-btn" onclick="openLog('${r.cluster}','${r.job_id}','${(r.job_name||'').replace(/'/g,"\\'")}')">log</button>`;
-    return `<tr>
-      <td><span class="badge">${r.cluster}</span></td>
-      <td class="dim" style="font-family:var(--mono);font-size:10px">${r.job_id}</td>
-      <td class="bold" title="${r.job_name||''}">${(r.job_name||'').slice(0,40)}</td>
-      <td>${stateChip(r.state)}</td>
-      <td class="dim">${started}</td>
-      <td class="dim">${ended}</td>
-      <td class="dim">${r.elapsed || '—'}</td>
-      <td>${logBtn}</td>
-    </tr>`;
-  }).join('');
+
+  const start = histPage * HIST_GROUPS_PER_PAGE;
+  const pageGroups = histGroups.slice(start, start + HIST_GROUPS_PER_PAGE);
+
+  let html = '';
+  pageGroups.forEach((g, gidx) => {
+    if (g.rows.length > 1) {
+      html += `<tr class="group-head-row"><td colspan="9" style="padding:4px 16px">${g.cluster} · ${g.label} · ${g.rows.length} runs</td></tr>`;
+    }
+    g.rows.forEach(r => {
+      const ended = fmtTime(r.ended_local || r.ended_at);
+      const started = fmtTime(r.started_local || r.started);
+      const gpuStr = parseGpus(r.nodes, r.gres) || '—';
+      const safeName = (r.job_name || '').replace(/'/g, "\\'");
+      const logBtn = `<button class="action-btn log-btn" onclick="openLog('${r.cluster}','${r.job_id}','${safeName}')">log</button>`;
+      const isChild = g.rows.length > 1 && _isChildName(r.job_name);
+      const arrow = isChild ? '<span class="dep-arrow">↳</span> ' : '';
+      const indent = isChild ? 'padding-left:28px' : '';
+      const bgClass = g.rows.length > 1 ? ` group-bg-${(start + gidx) % 4}` : '';
+      html += `<tr class="hist-row${bgClass}" style="border-bottom:1px solid #f0f0f5">
+        <td style="padding:4px 16px"><span class="badge">${r.cluster}</span></td>
+        <td class="dim" style="padding:4px 8px;font-family:var(--mono);font-size:10px">${r.job_id}</td>
+        <td class="bold" style="padding:4px 8px;${indent}" title="${r.job_name||''}">${arrow}${r.job_name || '—'}</td>
+        <td style="padding:4px 8px">${stateChip(r.state)}</td>
+        <td class="dim" style="padding:4px 8px">${started}</td>
+        <td class="dim" style="padding:4px 8px">${ended}</td>
+        <td class="dim" style="padding:4px 8px">${r.elapsed || '—'}</td>
+        <td class="dim" style="padding:4px 8px">${gpuStr}</td>
+        <td style="padding:4px 8px">${logBtn}</td>
+      </tr>`;
+    });
+  });
+  tbody.innerHTML = html;
+
+  const pag = document.getElementById('hist-pagination');
+  pag.innerHTML = `
+    <button onclick="histPrev()" ${histPage === 0 ? 'disabled' : ''}>← prev</button>
+    <span class="page-info">${histPage + 1} / ${totalPages}</span>
+    <button onclick="histNext()" ${histPage >= totalPages - 1 ? 'disabled' : ''}>next →</button>
+    <span style="margin-left:8px;font-size:10px">${totalGroups} groups</span>
+  `;
 }
+
+function histPrev() { histPage--; _renderHistPage(); }
+function histNext() { histPage++; _renderHistPage(); }
 
 function filterHistory() {
   const q = document.getElementById('hist-search').value.toLowerCase();
   const filtered = q
     ? historyData.filter(r => (r.job_name||'').toLowerCase().includes(q) || (r.job_id||'').includes(q))
     : historyData;
-  renderHistory(filtered);
+  histPage = 0;
+  _buildHistGroups(filtered);
+  _renderHistPage();
 }
 
 function showClusterHistory(name) {
@@ -1942,6 +2422,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') {
     closeModalDirect();
     closeStatsDirect();
+    closeSettingsModal();
   }
 });
 
@@ -2152,9 +2633,11 @@ function toast(msg, type='ok') {
 // ── Countdown ──
 function refreshNow() {
   clearInterval(cdTimer);
-  countdown = refreshIntervalSec;
   fetchAll();
-  startCountdown();
+  if (refreshIntervalSec > 0) {
+    countdown = refreshIntervalSec;
+    startCountdown();
+  }
 }
 
 function startCountdown() {
@@ -2166,13 +2649,197 @@ function startCountdown() {
   }, 1000);
 }
 
+// ── Settings modal ──
+
+function openSettingsModal() {
+  document.getElementById('settings-overlay').classList.add('open');
+  loadSettingsPanel();
+  renderMountPanel(allData);
+}
+
+function closeSettingsModal() {
+  document.getElementById('settings-overlay').classList.remove('open');
+}
+
+function showSettingsSection(el) {
+  document.querySelectorAll('.settings-nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll('.settings-section').forEach(s => s.classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById(el.dataset.section).classList.add('active');
+}
+
+async function loadSettingsPanel() {
+  try {
+    const res = await fetch('/api/settings');
+    const cfg = await res.json();
+    document.getElementById('set-ssh-timeout').value = cfg.ssh_timeout || 8;
+    document.getElementById('set-cache-fresh').value = cfg.cache_fresh_sec || 30;
+
+    const inc = (cfg.local_process_filters || {}).include || [];
+    const exc = (cfg.local_process_filters || {}).exclude || [];
+    document.getElementById('set-proc-include').value = inc.join(', ');
+    document.getElementById('set-proc-exclude').value = exc.join(', ');
+
+    renderClusterEditor(cfg.clusters || {});
+  } catch (e) {
+    toast('Failed to load settings', 'error');
+  }
+}
+
+function renderClusterEditor(clusters) {
+  const el = document.getElementById('cluster-editor');
+  el.innerHTML = Object.entries(clusters).map(([name, c]) => `
+    <div class="cluster-edit-card" data-cluster="${name}">
+      <div class="ce-head">
+        <span class="ce-name">${name}</span>
+        <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+      </div>
+      <div class="ce-fields">
+        <div class="ce-field"><span>Name</span><input data-f="name" value="${name}"></div>
+        <div class="ce-field"><span>Host</span><input data-f="host" value="${c.host || ''}"></div>
+        <div class="ce-field"><span>Port</span><input data-f="port" type="number" value="${c.port || 22}"></div>
+        <div class="ce-field"><span>GPU Type</span><input data-f="gpu_type" value="${c.gpu_type || ''}"></div>
+        <div class="ce-field" style="grid-column:1/-1"><span>Remote Root</span><input data-f="remote_root" value="${c.remote_root || '/'}"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function addClusterRow() {
+  const el = document.getElementById('cluster-editor');
+  const div = document.createElement('div');
+  div.className = 'cluster-edit-card';
+  div.innerHTML = `
+    <div class="ce-head">
+      <span class="ce-name">new cluster</span>
+      <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+    </div>
+    <div class="ce-fields">
+      <div class="ce-field"><span>Name</span><input data-f="name" value="" placeholder="cluster-name"></div>
+      <div class="ce-field"><span>Host</span><input data-f="host" value="" placeholder="login-node.example.com"></div>
+      <div class="ce-field"><span>Port</span><input data-f="port" type="number" value="22"></div>
+      <div class="ce-field"><span>GPU Type</span><input data-f="gpu_type" value="" placeholder="H100"></div>
+      <div class="ce-field" style="grid-column:1/-1"><span>Remote Root</span><input data-f="remote_root" value="/lustre"></div>
+    </div>
+  `;
+  el.appendChild(div);
+}
+
+async function saveClusters() {
+  const cards = document.querySelectorAll('#cluster-editor .cluster-edit-card');
+  const clusters = {};
+  for (const card of cards) {
+    const name = (card.querySelector('[data-f="name"]').value || '').trim();
+    if (!name) continue;
+    clusters[name] = {
+      host: card.querySelector('[data-f="host"]').value.trim(),
+      port: parseInt(card.querySelector('[data-f="port"]').value) || 22,
+      gpu_type: card.querySelector('[data-f="gpu_type"]').value.trim(),
+      remote_root: card.querySelector('[data-f="remote_root"]').value.trim() || '/',
+    };
+  }
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clusters }),
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      toast('Clusters saved');
+      fetchAll();
+    } else {
+      toast(d.error || 'Save failed', 'error');
+    }
+  } catch (e) {
+    toast('Save failed', 'error');
+  }
+}
+
+async function saveAdvancedSettings() {
+  const sshTimeout = parseInt(document.getElementById('set-ssh-timeout').value) || 8;
+  const cacheFresh = parseInt(document.getElementById('set-cache-fresh').value) || 30;
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ssh_timeout: sshTimeout, cache_fresh_sec: cacheFresh }),
+    });
+    const d = await res.json();
+    if (d.status === 'ok') toast('Advanced settings saved');
+    else toast(d.error || 'Save failed', 'error');
+  } catch (e) {
+    toast('Save failed', 'error');
+  }
+}
+
+async function saveProcessFilters() {
+  const inc = document.getElementById('set-proc-include').value.split(',').map(s => s.trim()).filter(Boolean);
+  const exc = document.getElementById('set-proc-exclude').value.split(',').map(s => s.trim()).filter(Boolean);
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ local_process_filters: { include: inc, exclude: exc } }),
+    });
+    const d = await res.json();
+    if (d.status === 'ok') toast('Process filters saved');
+    else toast(d.error || 'Save failed', 'error');
+  } catch (e) {
+    toast('Save failed', 'error');
+  }
+}
+
+// ── Local settings (localStorage) ──
+function loadLocalSettings() {
+  try {
+    const autoRefresh = localStorage.getItem('ncluster.autoRefresh') === '1';
+    const interval = parseInt(localStorage.getItem('ncluster.refreshInterval') || '30');
+    const pageSize = parseInt(localStorage.getItem('ncluster.histPageSize') || '50');
+    document.getElementById('set-autorefresh').checked = autoRefresh;
+    document.getElementById('set-refresh-interval').value = interval;
+    document.getElementById('set-hist-pagesize').value = pageSize;
+    return { autoRefresh, interval, pageSize };
+  } catch (_) {
+    return { autoRefresh: false, interval: 30, pageSize: 50 };
+  }
+}
+
+function saveLocalSettings() {
+  const autoRefresh = document.getElementById('set-autorefresh').checked;
+  const interval = parseInt(document.getElementById('set-refresh-interval').value) || 30;
+  const pageSize = parseInt(document.getElementById('set-hist-pagesize').value) || 50;
+  try {
+    localStorage.setItem('ncluster.autoRefresh', autoRefresh ? '1' : '0');
+    localStorage.setItem('ncluster.refreshInterval', String(interval));
+    localStorage.setItem('ncluster.histPageSize', String(pageSize));
+  } catch (_) {}
+  applyLocalSettings();
+}
+
+function applyLocalSettings() {
+  const s = loadLocalSettings();
+  HIST_GROUPS_PER_PAGE = s.pageSize;
+  refreshIntervalSec = s.autoRefresh ? Math.max(5, s.interval) : 0;
+  clearInterval(cdTimer);
+  if (refreshIntervalSec > 0) {
+    countdown = refreshIntervalSec;
+    startCountdown();
+    document.getElementById('cd').parentElement.style.display = '';
+  } else {
+    document.getElementById('cd').parentElement.style.display = 'none';
+  }
+}
+
 // Init
 showTab('live');
 setupTreeResizer();
 setupSidebarResizer();
 applySidebarState();
+loadLocalSettings();
+applyLocalSettings();
 fetchAll();
-startCountdown();
+if (refreshIntervalSec > 0) startCountdown();
 </script>
 </body>
 </html>

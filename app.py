@@ -21,9 +21,8 @@ DEFAULT_USER = os.environ.get("JOB_MONITOR_SSH_USER") or os.environ.get("USER") 
 DEFAULT_SSH_KEY = os.path.expanduser(os.environ.get("JOB_MONITOR_SSH_KEY", "~/.ssh/id_ed25519"))
 DB_PATH = os.path.join(APP_ROOT, "history.db")
 SSH_TIMEOUT = 8
-POLL_ACTIVE_SEC = 120
-POLL_IDLE_SEC = 900
-POLL_UNREACHABLE_SEC = 1800
+# On-demand fetch: serve cached data if younger than this; else re-poll.
+CACHE_FRESH_SEC = 30
 
 CONFIG_PATH = os.path.join(APP_ROOT, "config.json")
 if not os.path.isfile(CONFIG_PATH):
@@ -102,8 +101,8 @@ MOUNT_MAP = _load_mount_map()
 MOUNT_SCRIPT_PATH = os.path.join(os.path.dirname(__file__), "scripts", "sshfs_logs.sh")
 
 STATE_ORDER = {"RUNNING": 0, "COMPLETING": 1, "PENDING": 2, "FAILED": 3, "CANCELLED": 4}
-SQUEUE_FMT = "%i|%j|%T|%r|%M|%l|%D|%C|%b|%P|%V|%S"
-SQUEUE_HDR = ["jobid", "name", "state", "reason", "elapsed", "timelimit", "nodes", "cpus", "gres", "partition", "submitted", "started"]
+SQUEUE_FMT = "%i|%j|%T|%r|%M|%l|%D|%C|%b|%P|%V|%S|%E"
+SQUEUE_HDR = ["jobid", "name", "state", "reason", "elapsed", "timelimit", "nodes", "cpus", "gres", "partition", "submitted", "started", "dependency"]
 
 # In-memory cache
 _cache_lock = threading.Lock()
@@ -133,7 +132,7 @@ PROGRESS_TTL_SEC = 60
 PREFETCH_MIN_GAP_SEC = 120
 
 TERMINAL_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL"}
-PINNABLE_TERMINAL_STATES = TERMINAL_STATES | {"COMPLETED"}
+PINNABLE_TERMINAL_STATES = TERMINAL_STATES | {"COMPLETED", "COMPLETING"}
 
 
 # ─── Database ───────────────────────────────────────────────────────────────
@@ -755,23 +754,19 @@ USER="{user}"
 # Stats in one go
 squeue -h -j "$IDS" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
 
-# Best-effort logdir from latest sbatch script
-LOGDIR=""
+# Collect log files from all sbatch output dirs
 for BASE in {" ".join(NEMO_RUN_BASES)}; do
   [ -d "$BASE" ] || continue
-  SB=$(find "$BASE" -maxdepth 5 -name "*sbatch.sh" -type f 2>/dev/null | xargs ls -1t 2>/dev/null | head -1)
-  if [ -n "$SB" ]; then
-    OUT=$(grep '#SBATCH --output=' "$SB" | head -1 | sed 's/.*--output=//' | tr -d ' ')
-    if [ -n "$OUT" ]; then
-      LOGDIR=$(dirname "$OUT")
-      break
-    fi
-  fi
+  find "$BASE" -maxdepth 5 -name "*sbatch.sh" -type f 2>/dev/null | while read SB; do
+    OL=$(grep '#SBATCH --output=' "$SB" 2>/dev/null | head -1)
+    [ -z "$OL" ] && continue
+    D=$(dirname "$(echo "$OL" | sed 's/.*--output=//' | tr -d ' ')")
+    [ -d "$D" ] || continue
+    echo "LOGDIR:$D"
+    find "$D" -maxdepth 1 -type f 2>/dev/null | sed 's/^/FILE:/'
+  done
+  break
 done
-echo "LOGDIR:$LOGDIR"
-if [ -n "$LOGDIR" ] && [ -d "$LOGDIR" ]; then
-  find "$LOGDIR" -maxdepth 1 -type f 2>/dev/null | sed 's/^/FILE:/'
-fi
 """
     try:
         out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=20)
@@ -1081,44 +1076,39 @@ def _ssh_pool_gc_loop():
 
 
 def ssh_run(cluster_name, command):
-    lock = _get_cluster_lock(cluster_name)
-    with lock:
-        # Retry once with a fresh client if the pooled one fails.
-        for attempt in (1, 2):
-            client = _get_pooled_client(cluster_name, force_new=(attempt == 2))
-            try:
-                _, stdout, stderr = client.exec_command(command, timeout=SSH_TIMEOUT)
-                out = stdout.read().decode().strip()
-                err = stderr.read().decode().strip()
-                with _ssh_pool_lock:
-                    rec = _ssh_pool.get(cluster_name)
-                    if rec:
-                        rec["last_used"] = time.monotonic()
-                return out, err
-            except Exception:
-                _close_cluster_client(cluster_name)
-                if attempt == 2:
-                    raise
+    return _ssh_exec(cluster_name, command, SSH_TIMEOUT)
 
 
 def ssh_run_with_timeout(cluster_name, command, timeout_sec=20):
+    return _ssh_exec(cluster_name, command, timeout_sec)
+
+
+def _ssh_exec(cluster_name, command, timeout_sec):
+    """Run a command over the pooled SSH connection.
+
+    The per-cluster lock is held only while acquiring the client from the
+    pool, NOT during command execution.  This lets multiple concurrent
+    reads (log tail, dir listing, squeue) multiplex over the same SSH
+    transport instead of queuing behind each other.
+    """
     lock = _get_cluster_lock(cluster_name)
-    with lock:
-        for attempt in (1, 2):
+    for attempt in (1, 2):
+        with lock:
             client = _get_pooled_client(cluster_name, force_new=(attempt == 2))
-            try:
-                _, stdout, stderr = client.exec_command(command, timeout=timeout_sec)
-                out = stdout.read().decode().strip()
-                err = stderr.read().decode().strip()
-                with _ssh_pool_lock:
-                    rec = _ssh_pool.get(cluster_name)
-                    if rec:
-                        rec["last_used"] = time.monotonic()
-                return out, err
-            except Exception:
+        try:
+            _, stdout, stderr = client.exec_command(command, timeout=timeout_sec)
+            out = stdout.read().decode().strip()
+            err = stderr.read().decode().strip()
+            with _ssh_pool_lock:
+                rec = _ssh_pool.get(cluster_name)
+                if rec:
+                    rec["last_used"] = time.monotonic()
+            return out, err
+        except Exception:
+            with lock:
                 _close_cluster_client(cluster_name)
-                if attempt == 2:
-                    raise
+            if attempt == 2:
+                raise
 
 
 def get_job_stats(cluster, job_id):
@@ -1317,39 +1307,48 @@ if [ -n "$SCTL" ]; then
   fi
 fi
 
-# ── 2. Grep nemo-run sbatch scripts for this job_id ──────────────────────
-# The sbatch scripts contain the output path in a #SBATCH --output= line.
-# We search the most-recently-modified sbatch scripts first.
+# ── 2. Scan nemo-run sbatch scripts for this job_id ──────────────────────
 if [ -z "$LOGDIR" ]; then
   for NEMO_BASE in {" ".join(NEMO_RUN_BASES)}; do
     [ -d "$NEMO_BASE" ] || continue
-    # Find sbatch scripts that contain this job_id (means the job ran from that experiment)
+    # 2a. Scripts that explicitly mention the job ID
     SBATCH=$(find "$NEMO_BASE" -maxdepth 5 -name "*sbatch.sh" 2>/dev/null \\
              | xargs grep -l "$JOB" 2>/dev/null | head -1)
-    if [ -z "$SBATCH" ]; then
-      # Fallback: newest sbatch scripts (job_id won't be in them but output path is consistent)
-      SBATCH=$(find "$NEMO_BASE" -maxdepth 5 -name "*sbatch.sh" 2>/dev/null \\
-               | sort -t_ -k1 -r | head -1)
-    fi
     if [ -n "$SBATCH" ]; then
       OUT_LINE=$(grep '#SBATCH --output=' "$SBATCH" | head -1)
       OUT_PATH=$(echo "$OUT_LINE" | sed 's/.*--output=//' | sed "s/%j/$JOB/g" | tr -d ' ')
       [ -n "$OUT_PATH" ] && LOGDIR=$(dirname "$OUT_PATH")
-      break
     fi
+    [ -n "$LOGDIR" ] && break
+    # 2b. Probe each script's output dir for files matching this job ID
+    for SB in $(find "$NEMO_BASE" -maxdepth 5 -name "*sbatch.sh" 2>/dev/null); do
+      OL=$(grep '#SBATCH --output=' "$SB" 2>/dev/null | head -1)
+      [ -z "$OL" ] && continue
+      OP=$(echo "$OL" | sed 's/.*--output=//' | sed "s/%j/$JOB/g" | tr -d ' ')
+      D=$(dirname "$OP")
+      [ -d "$D" ] || continue
+      HIT=$(find "$D" -maxdepth 1 -type f -name "*$JOB*" 2>/dev/null | head -1)
+      if [ -n "$HIT" ]; then
+        LOGDIR="$D"
+        break
+      fi
+    done
+    [ -n "$LOGDIR" ] && break
   done
 fi
 
 # ── 3. List matching files in log dir ─────────────────────────────────────
+FOUND=0
 if [ -n "$LOGDIR" ] && [ -d "$LOGDIR" ]; then
   find "$LOGDIR" -maxdepth 1 -type f -name "*$JOB*" 2>/dev/null | sort | while read F; do
     emit "$(basename "$F")" "$F"
   done
-else
-  # Last resort: search user root for *job_id*.log files
+  FOUND=$(find "$LOGDIR" -maxdepth 1 -type f -name "*$JOB*" 2>/dev/null | wc -l)
+fi
+if [ "$FOUND" -eq 0 ]; then
   for ROOT in {" ".join(LOG_SEARCH_BASES)}; do
     [ -d "$ROOT" ] || continue
-    find "$ROOT" -maxdepth 8 -type f -name "*$JOB*.log" 2>/dev/null | head -20 | while read F; do
+    find "$ROOT" -maxdepth 6 -type f -name "*$JOB*" 2>/dev/null | head -20 | while read F; do
       emit "$(basename "$F")" "$F"
     done
     break
@@ -1358,10 +1357,7 @@ fi
 """
 
     try:
-        client = _ssh_client(cluster_name)
-        _, stdout, _ = client.exec_command(script, timeout=25)
-        out = stdout.read().decode().strip()
-        client.close()
+        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=20)
     except Exception as e:
         return {"files": [], "dirs": [], "error": f"SSH error: {e}"}
 
@@ -1428,6 +1424,19 @@ def get_job_stats_cached(cluster, job_id, force=False):
 
 # ─── Job fetching ────────────────────────────────────────────────────────────
 
+_DEP_RE = re.compile(r'(after\w*):(\d+)')
+
+
+def parse_dependency(raw):
+    """Parse squeue dependency string into a list of {type, job_id} dicts.
+
+    Examples: "afterok:123", "afterok:123,afterany:456", "(null)", ""
+    """
+    if not raw or raw.strip() in {"", "(null)"}:
+        return []
+    return [{"type": m.group(1), "job_id": m.group(2)} for m in _DEP_RE.finditer(raw)]
+
+
 def parse_squeue_output(out):
     jobs = []
     for line in out.splitlines():
@@ -1437,6 +1446,22 @@ def parse_squeue_output(out):
         if len(parts) < len(SQUEUE_HDR):
             parts += [""] * (len(SQUEUE_HDR) - len(parts))
         jobs.append(dict(zip(SQUEUE_HDR, parts)))
+
+    # Build dependency graph across all jobs in the batch.
+    live_ids = {j["jobid"] for j in jobs}
+    for j in jobs:
+        deps = parse_dependency(j.get("dependency", ""))
+        j["depends_on"] = [d["job_id"] for d in deps if d["job_id"] in live_ids]
+        j["dep_details"] = deps  # full list including off-screen parents
+
+    # Reverse map: parent -> list of children
+    children_map = {}
+    for j in jobs:
+        for pid in j["depends_on"]:
+            children_map.setdefault(pid, []).append(j["jobid"])
+    for j in jobs:
+        j["dependents"] = children_map.get(j["jobid"], [])
+
     jobs.sort(key=lambda j: STATE_ORDER.get(j.get("state", "").upper(), 99))
     return jobs
 
@@ -1524,58 +1549,35 @@ def sacct_final(cluster_name, job_id):
         return {}
 
 
-# ─── Background poller ───────────────────────────────────────────────────────
+# ─── On-demand polling ────────────────────────────────────────────────────────
 
-def _dithered(base_sec):
-    """Apply ±20% random jitter so clusters don't all poll at the same instant."""
-    return base_sec * random.uniform(0.8, 1.2)
+def _is_cache_fresh(cluster_name):
+    """True if the cached data for this cluster is younger than CACHE_FRESH_SEC."""
+    ts = _last_polled.get(cluster_name, 0.0)
+    return (time.monotonic() - ts) < CACHE_FRESH_SEC
 
 
-def poll_loop():
-    # Adaptive polling with dither to stay friendly to login nodes:
-    #   active jobs  ~2 min   |  idle  ~15 min  |  unreachable  ~30 min
-    for name in CLUSTERS:
-        _last_polled.setdefault(name, 0.0)
+def refresh_all_clusters():
+    """Poll every cluster whose cache is stale.  Called on page load / API hit."""
+    stale = [n for n in CLUSTERS if not _is_cache_fresh(n)]
+    if not stale:
+        return
+    threads = []
+    for name in stale:
+        _last_polled[name] = time.monotonic()
+        t = threading.Thread(target=poll_cluster, args=(name,), daemon=True)
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join(timeout=SSH_TIMEOUT + 5)
 
-    while True:
-        now = time.monotonic()
-        to_poll = []
 
-        with _cache_lock:
-            snapshot = {k: dict(v) for k, v in _cache.items()}
-
-        for name in CLUSTERS:
-            data = snapshot.get(name, {})
-            status = data.get("status")
-            jobs = data.get("jobs", [])
-            has_active = any(
-                (j.get("state") in ("RUNNING", "COMPLETING", "PENDING")) and not j.get("_pinned")
-                for j in jobs
-            )
-
-            if not data:
-                interval = _dithered(10)
-            elif status != "ok":
-                interval = _dithered(POLL_UNREACHABLE_SEC)
-            elif has_active:
-                interval = _dithered(POLL_ACTIVE_SEC)
-            else:
-                interval = _dithered(POLL_IDLE_SEC)
-
-            if now - _last_polled.get(name, 0.0) >= interval:
-                to_poll.append(name)
-                _last_polled[name] = now
-
-        if to_poll:
-            threads = []
-            for name in to_poll:
-                t = threading.Thread(target=poll_cluster, args=(name,), daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join(timeout=SSH_TIMEOUT + 5)
-
-        time.sleep(5)
+def refresh_cluster(cluster_name):
+    """Poll a single cluster if its cache is stale."""
+    if _is_cache_fresh(cluster_name):
+        return
+    _last_polled[cluster_name] = time.monotonic()
+    poll_cluster(cluster_name)
 
 
 def poll_cluster(name):
@@ -1621,11 +1623,13 @@ def poll_cluster(name):
 
 @app.route("/")
 def index():
-    return render_template("index.html", clusters=CLUSTERS)
+    return render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER)
 
 
 @app.route("/api/jobs")
 def api_jobs():
+    refresh_all_clusters()
+
     with _cache_lock:
         snapshot = {k: dict(v) for k, v in _cache.items()}
 
@@ -1672,12 +1676,13 @@ def api_jobs():
     ordered = dict(sorted(snapshot.items(), key=cluster_sort_key))
 
     # Async warm-up for jobs users are most likely to inspect soon
+    # Skip PENDING — they have no log dirs or stats yet.
     for c, d in ordered.items():
         if d.get("status") != "ok":
             continue
         active_jobs = [
             j for j in d.get("jobs", [])
-            if str(j.get("state", "")).upper() in {"RUNNING", "PENDING", "COMPLETING"}
+            if str(j.get("state", "")).upper() in {"RUNNING", "COMPLETING"}
             and not j.get("_pinned")
         ][:3]
         for j in active_jobs:
@@ -1746,9 +1751,11 @@ def api_clear_failed_job(cluster, job_id):
 def api_jobs_cluster(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
-    data = fetch_cluster_data(cluster)
+    # Force-refresh this cluster (bypass staleness check — user explicitly asked).
+    _last_polled[cluster] = 0.0
+    refresh_cluster(cluster)
     with _cache_lock:
-        _cache[cluster] = data
+        data = dict(_cache.get(cluster, {"status": "ok", "jobs": [], "updated": None}))
     if data.get("status") == "ok":
         live_ids = {j["jobid"] for j in data.get("jobs", [])}
         pinned = [
@@ -1763,7 +1770,7 @@ def api_jobs_cluster(cluster):
 
         for j in data.get("jobs", []):
             s = str(j.get("state", "")).upper()
-            if s in {"RUNNING", "PENDING", "COMPLETING"} and not j.get("_pinned"):
+            if s in {"RUNNING", "COMPLETING"} and not j.get("_pinned"):
                 _schedule_prefetch(cluster, j.get("jobid"))
             if s == "RUNNING":
                 pct = _cache_get(_progress_cache, (cluster, j.get("jobid")), PROGRESS_TTL_SEC)
@@ -1990,6 +1997,89 @@ def api_log(cluster, job_id):
     })
 
 
+# ─── Settings API ─────────────────────────────────────────────────────────────
+
+def _reload_config(new_cfg):
+    """Hot-reload mutable globals from a new config dict.  Writes to disk first."""
+    global _CONFIG, CLUSTERS, MOUNT_MAP, SSH_TIMEOUT, CACHE_FRESH_SEC
+    global LOG_SEARCH_BASES, NEMO_RUN_BASES, MOUNT_LUSTRE_PREFIXES
+    global LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE
+
+    with open(CONFIG_PATH, "w") as fh:
+        json.dump(new_cfg, fh, indent=2)
+        fh.write("\n")
+    _CONFIG = new_cfg
+
+    LOG_SEARCH_BASES = new_cfg.get("log_search_bases", [])
+    NEMO_RUN_BASES = new_cfg.get("nemo_run_bases", [])
+    MOUNT_LUSTRE_PREFIXES = new_cfg.get("mount_lustre_prefixes", [])
+    pf = new_cfg.get("local_process_filters", {})
+    LOCAL_PROC_INCLUDE = pf.get("include", [])
+    LOCAL_PROC_EXCLUDE = pf.get("exclude", [])
+    SSH_TIMEOUT = new_cfg.get("ssh_timeout", 8)
+    CACHE_FRESH_SEC = new_cfg.get("cache_fresh_sec", 30)
+
+    new_clusters = {}
+    for cname, ccfg in new_cfg.get("clusters", {}).items():
+        new_clusters[cname] = {
+            "host": ccfg.get("host", ""),
+            "user": ccfg.get("user", DEFAULT_USER),
+            "key": os.path.expanduser(ccfg.get("key", DEFAULT_SSH_KEY)),
+            "port": ccfg.get("port", 22),
+            "gpu_type": ccfg.get("gpu_type", ""),
+        }
+    new_clusters["local"] = {
+        "host": None, "user": None, "key": None,
+        "port": None, "gpu_type": "local",
+    }
+
+    removed = set(CLUSTERS.keys()) - set(new_clusters.keys())
+    for r in removed:
+        _close_cluster_client(r)
+
+    CLUSTERS.clear()
+    CLUSTERS.update(new_clusters)
+    MOUNT_MAP.clear()
+    MOUNT_MAP.update(_load_mount_map())
+
+
+def _settings_response():
+    """Build the settings payload for GET /api/settings."""
+    cfg = dict(_CONFIG)
+    cfg["ssh_timeout"] = SSH_TIMEOUT
+    cfg["cache_fresh_sec"] = CACHE_FRESH_SEC
+    return cfg
+
+
+@app.route("/api/settings")
+def api_settings_get():
+    return jsonify(_settings_response())
+
+
+@app.route("/api/settings", methods=["POST"])
+def api_settings_post():
+    patch = request.get_json(silent=True)
+    if not patch or not isinstance(patch, dict):
+        return jsonify({"status": "error", "error": "Invalid JSON body"}), 400
+
+    merged = dict(_CONFIG)
+    for key in ("port", "ssh_timeout", "cache_fresh_sec",
+                "log_search_bases", "nemo_run_bases", "mount_lustre_prefixes",
+                "local_process_filters"):
+        if key in patch:
+            merged[key] = patch[key]
+
+    if "clusters" in patch:
+        merged["clusters"] = patch["clusters"]
+
+    try:
+        _reload_config(merged)
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    return jsonify({"status": "ok", "settings": _settings_response()})
+
+
 if __name__ == "__main__":
     init_db()
     # Mark recent terminal jobs as board_visible=1 so they appear on board after restart
@@ -2008,6 +2098,4 @@ if __name__ == "__main__":
     # Background cleanup for idle pooled SSH connections.
     threading.Thread(target=_ssh_pool_gc_loop, daemon=True).start()
 
-    t = threading.Thread(target=poll_loop, daemon=True)
-    t.start()
     app.run(host="0.0.0.0", port=APP_PORT, debug=False)
