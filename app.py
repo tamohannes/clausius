@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import re
 import shlex
 import select
@@ -20,9 +21,9 @@ DEFAULT_USER = os.environ.get("JOB_MONITOR_SSH_USER") or os.environ.get("USER") 
 DEFAULT_SSH_KEY = os.path.expanduser(os.environ.get("JOB_MONITOR_SSH_KEY", "~/.ssh/id_ed25519"))
 DB_PATH = os.path.join(APP_ROOT, "history.db")
 SSH_TIMEOUT = 8
-POLL_FAST_SEC = 8
-POLL_IDLE_SEC = 45
-POLL_UNREACHABLE_SEC = 90
+POLL_ACTIVE_SEC = 120
+POLL_IDLE_SEC = 900
+POLL_UNREACHABLE_SEC = 1800
 
 CONFIG_PATH = os.path.join(APP_ROOT, "config.json")
 if not os.path.isfile(CONFIG_PATH):
@@ -129,7 +130,7 @@ LOG_CONTENT_TTL_SEC = 45
 STATS_TTL_SEC = 15
 DIR_LIST_TTL_SEC = 20
 PROGRESS_TTL_SEC = 60
-PREFETCH_MIN_GAP_SEC = 20
+PREFETCH_MIN_GAP_SEC = 120
 
 TERMINAL_STATES = {"FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "BOOT_FAIL"}
 PINNABLE_TERMINAL_STATES = TERMINAL_STATES | {"COMPLETED"}
@@ -1525,11 +1526,14 @@ def sacct_final(cluster_name, job_id):
 
 # ─── Background poller ───────────────────────────────────────────────────────
 
+def _dithered(base_sec):
+    """Apply ±20% random jitter so clusters don't all poll at the same instant."""
+    return base_sec * random.uniform(0.8, 1.2)
+
+
 def poll_loop():
-    # Staggered/adaptive polling:
-    # - RUNNING/PENDING clusters: fast
-    # - idle clusters: medium
-    # - unreachable clusters: slow
+    # Adaptive polling with dither to stay friendly to login nodes:
+    #   active jobs  ~2 min   |  idle  ~15 min  |  unreachable  ~30 min
     for name in CLUSTERS:
         _last_polled.setdefault(name, 0.0)
 
@@ -1549,15 +1553,14 @@ def poll_loop():
                 for j in jobs
             )
 
-            # Before first successful fetch, poll fast to warm cache quickly
             if not data:
-                interval = 5
+                interval = _dithered(10)
             elif status != "ok":
-                interval = POLL_UNREACHABLE_SEC
+                interval = _dithered(POLL_UNREACHABLE_SEC)
             elif has_active:
-                interval = POLL_FAST_SEC
+                interval = _dithered(POLL_ACTIVE_SEC)
             else:
-                interval = POLL_IDLE_SEC
+                interval = _dithered(POLL_IDLE_SEC)
 
             if now - _last_polled.get(name, 0.0) >= interval:
                 to_poll.append(name)
@@ -1572,7 +1575,7 @@ def poll_loop():
             for t in threads:
                 t.join(timeout=SSH_TIMEOUT + 5)
 
-        time.sleep(2)
+        time.sleep(5)
 
 
 def poll_cluster(name):
