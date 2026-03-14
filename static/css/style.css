@@ -348,8 +348,8 @@ tbody tr.pinned-completed-row:hover { background: #eefaf0; }
 .group-count { color: var(--muted); font-weight: 400; }
 .group-project-badge {
   font-weight: 600; text-transform: none; letter-spacing: 0;
-  padding: 1px 7px; border-radius: 4px; margin-right: 6px;
-  font-size: 9px; color: var(--text);
+  padding: 2px 8px; border-radius: 4px; margin-right: 6px;
+  font-size: 11px; color: var(--text);
 }
 tr.group-bg-0 td { background: #fcfdff; }
 tr.group-bg-1 td { background: #f8fbff; }
