@@ -273,8 +273,13 @@ def _finalize_gone_job(cluster, job_id, prev_job):
     sacct_state = final.get("state", "").upper().split()[0] if final.get("state") else ""
     if sacct_state:
         final_state = sacct_state
-    elif prev_state in ("PENDING", ""):
-        final_state = "CANCELLED"
+    elif not final:
+        # No sacct record at all — job was killed externally (quota, preemption,
+        # admin cancel, etc.) without ever producing accounting data.
+        if prev_state in ("PENDING", ""):
+            final_state = "CANCELLED"
+        else:
+            final_state = "FAILED"
     else:
         final_state = prev_state or "COMPLETED"
 
