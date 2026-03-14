@@ -229,7 +229,9 @@ function renderCard(name, data) {
       const depBadge = depBadgeHtml(j, byId);
       const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
       const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
-      const nameCell = `${indent}${depArrow}<span title="${j.name}">${j.name}</span>`;
+      const hasGpu = !!gpuStr;
+      const nameCls = hasGpu ? '' : ' name-cpu';
+      const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span>`;
 
       return `<tr class="${rowClass}">
         <td class="dim">${j.jobid}</td>

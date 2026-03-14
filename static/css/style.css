@@ -281,6 +281,7 @@ td {
 }
 td.dim { color: var(--muted); }
 td.bold { font-weight: 500; }
+.name-cpu { color: var(--muted); font-weight: 400; }
 
 .state-chip {
   display: inline-flex; align-items: center; gap: 4px;

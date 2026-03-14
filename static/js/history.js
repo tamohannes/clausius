@@ -115,10 +115,12 @@ function _renderHistPage() {
       const started = fmtTime(j.started_local || j.started);
       const ended = fmtTime(j.ended_local || j.ended_at);
 
+      const hasGpu = parseGpus(j.nodes, j.gres) !== null;
+      const nameCls = hasGpu ? '' : ' name-cpu';
       html += `<tr class="hist-compact ${pinKind}${bgClass}">
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
-        <td class="bold">${indent}${depArrow}<span title="${j.name}">${j.name || '—'}</span></td>
+        <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>
         <td>${stateChip(j.state)} ${depBadge}</td>
         <td>${logBtn}</td>
         <td class="dim">${started}</td>
