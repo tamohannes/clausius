@@ -45,6 +45,8 @@ function _buildHistGroups(rows) {
     project: r.project || '',
     project_color: r.project_color || '',
     project_emoji: r.project_emoji || '',
+    reason: r.reason || '',
+    exit_code: r.exit_code || '',
     _cluster: r.cluster,
     _pinned: true,
   }));
@@ -129,7 +131,7 @@ function _renderHistPage() {
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
         <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>
-        <td>${stateChip(j.state)} ${depBadge}</td>
+        <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>
         <td>${logBtn}</td>
         <td class="dim">${started}</td>
         <td class="dim">${ended}</td>

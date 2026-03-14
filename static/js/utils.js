@@ -45,12 +45,22 @@ function progressRing(pct) {
   </svg>`;
 }
 
-function stateChip(s, progress) {
+function stateChip(s, progress, reason, exitCode) {
   const cls = stateClass(s);
-  if (progress != null && (s || '').toUpperCase() === 'RUNNING') {
+  const st = (s || '').toUpperCase();
+  if (progress != null && st === 'RUNNING') {
     return `<span class="state-chip ${cls}">${s}${progressRing(progress)}<span class="progress-pct">${progress}%</span></span>`;
   }
-  return `<span class="state-chip ${cls}">${s || '—'}</span>`;
+  const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${reason}"` : '';
+  let extra = '';
+  if (exitCode && exitCode !== '0:0' && (st.includes('FAIL') || st.includes('CANCEL') || st.includes('TIMEOUT'))) {
+    extra = `<span class="exit-code">exit ${exitCode}</span>`;
+  }
+  if (reason && reason !== 'None' && reason !== 'Priority' && !reason.includes('Dependency') && (st.includes('FAIL') || st.includes('CANCEL') || st.includes('TIMEOUT'))) {
+    const short = reason.length > 30 ? reason.slice(0, 28) + '…' : reason;
+    extra += `<span class="fail-reason">${short}</span>`;
+  }
+  return `<span class="state-chip ${cls}"${tip}>${s || '—'}</span>${extra}`;
 }
 
 function isFailedLikeState(s) {

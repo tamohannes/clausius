@@ -173,7 +173,7 @@ function _renderProjLive() {
         rows += `<tr>
           <td class="dim">${j.jobid}</td>
           <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span></td>
-          <td>${stateChip(j.state, j.progress)} ${depBadge}</td>
+          <td>${stateChip(j.state, j.progress, j.reason, j.exit_code)} ${depBadge}</td>
           <td>${logBtn} ${statsBtn}</td>
           <td class="dim">${startTime}</td>
           <td class="dim">—</td>
@@ -222,6 +222,7 @@ function _buildProjGroups(rows) {
     ended_local: r.ended_local || '', ended_at: r.ended_at || '',
     depends_on: r.depends_on || [], dependents: r.dependents || [],
     dep_details: r.dep_details || [], project: r.project || '',
+    reason: r.reason || '', exit_code: r.exit_code || '',
     _cluster: r.cluster, _pinned: true,
   }));
 
@@ -293,7 +294,7 @@ function _renderProjPage() {
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
         <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>
-        <td>${stateChip(j.state)} ${depBadge}</td>
+        <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>
         <td>${logBtn}</td>
         <td class="dim">${started}</td>
         <td class="dim">${ended}</td>

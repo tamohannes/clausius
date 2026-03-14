@@ -135,6 +135,21 @@ def sacct_final(cluster_name, job_id):
         return {}
 
 
+def _try_get_stdout_path(cluster_name, job_id):
+    """Best-effort attempt to get the StdOut path from scontrol before
+    the job record disappears."""
+    try:
+        out, _ = ssh_run_with_timeout(
+            cluster_name,
+            f"scontrol show job {job_id} 2>/dev/null | tr ' ' '\\n' | grep '^StdOut=' | cut -d= -f2-",
+            timeout_sec=5,
+        )
+        path = out.strip()
+        return path if path and path != "(null)" else ""
+    except Exception:
+        return ""
+
+
 def get_job_stats(cluster, job_id):
     if cluster == "local":
         return {"status": "error", "error": "Stats popup is supported for Slurm clusters only."}
@@ -269,19 +284,33 @@ def poll_cluster(name):
 
 def _finalize_gone_job(cluster, job_id, prev_job):
     prev_state = prev_job.get("state", "").upper()
+    prev_reason = prev_job.get("reason", "")
     final = sacct_final(cluster, job_id)
     sacct_state = final.get("state", "").upper().split()[0] if final.get("state") else ""
+
     if sacct_state:
         final_state = sacct_state
     elif not final:
-        # No sacct record at all — job was killed externally (quota, preemption,
-        # admin cancel, etc.) without ever producing accounting data.
         if prev_state in ("PENDING", ""):
             final_state = "CANCELLED"
         else:
             final_state = "FAILED"
     else:
         final_state = prev_state or "COMPLETED"
+
+    # Build reason: sacct state detail > previous squeue reason > generic
+    reason = ""
+    if final.get("state") and " " in final["state"]:
+        reason = final["state"]  # e.g. "FAILED by 0" or "CANCELLED by 1000"
+    elif prev_reason and prev_reason not in ("None", "Priority"):
+        reason = prev_reason
+    elif not final and prev_state not in ("PENDING", ""):
+        reason = "killed externally (no sacct record)"
+
+    # Try to grab output path from scontrol before it disappears
+    log_path = prev_job.get("log_path", "") or ""
+    if not log_path and cluster != "local":
+        log_path = _try_get_stdout_path(cluster, job_id)
 
     record = final if final else {
         "jobid": job_id, "name": prev_job.get("name", ""), "state": final_state,
@@ -292,6 +321,16 @@ def _finalize_gone_job(cluster, job_id, prev_job):
     if not record.get("name") and prev_job.get("name"):
         record["name"] = prev_job["name"]
     record.setdefault("state", final_state)
+    if reason:
+        record["reason"] = reason
+    if not record.get("reason") and prev_reason:
+        record["reason"] = prev_reason
+    if final.get("exit_code"):
+        record["exit_code"] = final["exit_code"]
+    elif prev_job.get("exit_code"):
+        record["exit_code"] = prev_job["exit_code"]
+    if log_path:
+        record["log_path"] = log_path
     if not record.get("ended_at"):
         record["ended_at"] = datetime.now().isoformat()
     upsert_job(cluster, record, terminal=True)
