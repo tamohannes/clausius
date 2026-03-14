@@ -415,13 +415,13 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 }
 .history-filter select:focus, .history-filter input:focus { border-color: var(--accent); }
 
-.hist-state-filters { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.hist-state-cb {
-  display: flex; align-items: center; gap: 2px; cursor: pointer;
-  font-family: var(--mono); font-size: 10px;
+.hist-state-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.hist-state-btn {
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  padding: 3px 9px; border-radius: 5px; cursor: pointer;
+  border: 1px solid transparent; transition: all 0.15s;
 }
-.hist-state-cb input[type="checkbox"] { width: 12px; height: 12px; margin: 0; cursor: pointer; }
-.hist-state-cb .state-chip { cursor: pointer; }
+.hist-state-btn:not(.active) { opacity: 0.3; }
 
 .history-table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
 .hist-pagination {
