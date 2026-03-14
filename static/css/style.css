@@ -408,10 +408,16 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 .proj-layout { display: flex; gap: 0; min-height: 0; flex: 1; }
 .proj-main { flex: 1; min-width: 0; overflow-y: auto; }
 .logbook-panel {
-  width: 340px; min-width: 280px; max-width: 420px;
+  width: 370px; min-width: 280px; max-width: 600px;
   border-left: 1px solid var(--border); background: var(--bg);
   display: flex; flex-direction: column; overflow-y: auto;
+  position: relative;
 }
+.logbook-resizer {
+  position: absolute; left: -3px; top: 0; bottom: 0; width: 6px;
+  cursor: col-resize; z-index: 5;
+}
+.logbook-resizer:hover { background: var(--accent); opacity: 0.3; }
 .logbook-head {
   display: flex; align-items: center; gap: 4px;
   padding: 10px 12px; border-bottom: 1px solid var(--border);
