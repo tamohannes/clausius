@@ -2,6 +2,27 @@
 
 let _lbCurrentLogbook = '';
 let _lbEditingIndex = -1;
+let _lbResizing = false;
+
+(function setupLogbookResizer() {
+  document.addEventListener('mousedown', e => {
+    if (e.target.id === 'logbook-resizer') {
+      _lbResizing = true;
+      e.preventDefault();
+    }
+  });
+  document.addEventListener('mousemove', e => {
+    if (!_lbResizing) return;
+    const panel = document.getElementById('logbook-panel');
+    if (!panel) return;
+    const parentRect = panel.parentElement.getBoundingClientRect();
+    let w = parentRect.right - e.clientX;
+    if (w < 280) w = 280;
+    if (w > 600) w = 600;
+    panel.style.width = w + 'px';
+  });
+  document.addEventListener('mouseup', () => { _lbResizing = false; });
+})();
 
 async function loadLogbookPanel(project) {
   const sel = document.getElementById('logbook-select');
