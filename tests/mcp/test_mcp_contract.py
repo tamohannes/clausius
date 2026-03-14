@@ -8,6 +8,7 @@ import mcp_server
 from mcp_server import (
     list_jobs, list_log_files, get_job_log,
     get_job_stats, get_history, cancel_job, cancel_jobs,
+    list_projects, get_project_jobs,
     cleanup_history, jobs_summary, _slim_job, _api_get,
 )
 
@@ -158,6 +159,60 @@ class TestGetHistory:
             url = mock.call_args[0][0]
             assert "cluster=c1" in url
             assert "limit=10" in url
+
+    def test_with_project_filter(self):
+        with patch.object(mcp_server, "_api_get") as mock:
+            mock.return_value = []
+            get_history(project="artsiv", limit=20)
+            url = mock.call_args[0][0]
+            assert "project=artsiv" in url
+
+
+# ── list_projects ────────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestListProjects:
+    def test_returns_list(self):
+        with _mock_api_get([{"project": "artsiv", "job_count": 5, "color": "#e8f4fd"}]):
+            result = list_projects()
+        assert isinstance(result, list)
+        assert result[0]["project"] == "artsiv"
+
+    def test_wraps_error_in_list(self):
+        with _mock_api_get({"status": "error", "error": "fail"}):
+            result = list_projects()
+        assert isinstance(result, list)
+
+
+# ── get_project_jobs ─────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestGetProjectJobs:
+    def test_combines_live_and_history(self):
+        def _mock_get(path):
+            if "/api/history" in path:
+                return [{"cluster": "c1", "job_id": "1", "job_name": "artsiv_eval", "state": "COMPLETED", "project": "artsiv"}]
+            return {"c1": {"status": "ok", "jobs": [
+                {"jobid": "2", "name": "artsiv_train", "state": "RUNNING", "project": "artsiv"}
+            ]}}
+        with patch.object(mcp_server, "_api_get", side_effect=_mock_get):
+            result = get_project_jobs("artsiv")
+        assert isinstance(result, list)
+        assert len(result) == 2
+
+    def test_filters_by_project(self):
+        def _mock_get(path):
+            if "/api/history" in path:
+                return []
+            return {"c1": {"status": "ok", "jobs": [
+                {"jobid": "1", "name": "artsiv_eval", "state": "RUNNING", "project": "artsiv"},
+                {"jobid": "2", "name": "other_eval", "state": "RUNNING", "project": "other"},
+            ]}}
+        with patch.object(mcp_server, "_api_get", side_effect=_mock_get):
+            result = get_project_jobs("artsiv")
+        live = [r for r in result if r.get("state") == "RUNNING"]
+        assert all(r.get("cluster") for r in live)
+        assert len(live) == 1
 
 
 # ── cancel_job ───────────────────────────────────────────────────────────────
