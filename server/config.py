@@ -14,13 +14,19 @@ SSH_TIMEOUT = 8
 CACHE_FRESH_SEC = 30
 
 CONFIG_PATH = os.path.join(PROJECT_ROOT, "conf", "config.json")
-if not os.path.isfile(CONFIG_PATH):
+_CONFIG_EXAMPLE_PATH = os.path.join(PROJECT_ROOT, "conf", "config.example.json")
+
+if os.path.isfile(CONFIG_PATH):
+    with open(CONFIG_PATH) as _cf:
+        _CONFIG = json.load(_cf)
+elif os.path.isfile(_CONFIG_EXAMPLE_PATH):
+    with open(_CONFIG_EXAMPLE_PATH) as _cf:
+        _CONFIG = json.load(_cf)
+else:
     raise SystemExit(
         f"Config file not found: {CONFIG_PATH}\n"
         "Copy config.example.json to config.json and fill in your cluster details."
     )
-with open(CONFIG_PATH) as _cf:
-    _CONFIG = json.load(_cf)
 
 APP_PORT = _CONFIG.get("port", 7272)
 LOG_SEARCH_BASES = _CONFIG.get("log_search_bases", [])

@@ -175,6 +175,76 @@ systemctl --user daemon-reload
 systemctl --user enable --now job-monitor.service
 ```
 
+## Testing
+
+The test suite works in two modes:
+
+- **GitHub / CI**: No `config.json` needed. Falls back to `config.example.json` automatically. All tests use a mock cluster (`mock-cluster`) with mocked SSH, so no real infrastructure is required.
+- **Local dev**: `config.json` present with real clusters. Unit and integration tests still use the mock cluster. Live tests target the first real cluster from your config (or `TEST_CLUSTER` env var).
+
+### Setup
+
+```bash
+pip install pytest pytest-cov
+```
+
+For frontend tests (requires Node.js):
+
+```bash
+npm install
+```
+
+### Running Tests
+
+```bash
+# All deterministic tests — safe for CI (no config.json, no SSH, no cluster)
+pytest -m "not live"
+
+# Unit tests only
+pytest -m unit
+
+# Integration tests (Flask test client with mock cluster)
+pytest -m integration
+
+# MCP contract + transport tests
+pytest -m mcp
+
+# Live cluster tests (local dev only — requires running app + SSH access)
+pytest -m live
+
+# Destructive live tests only
+pytest -m "live and destructive"
+
+# Frontend unit tests (requires Node.js)
+npx vitest run
+
+# E2E browser tests (requires Node.js + running app)
+npx playwright test
+```
+
+### Test Architecture
+
+| Layer | Directory | Count | What it covers | Needs config.json? |
+|-------|-----------|-------|----------------|---------------------|
+| Unit | `tests/unit/` | 133 | Parsers, DB ops, cache, mount resolution, config | No |
+| Integration | `tests/integration/` | 69 | All Flask routes via test client + MCP boundary | No |
+| MCP | `tests/mcp/` | 38 | Tool contracts, transport errors, edge cases | No |
+| Frontend | `tests/frontend/` | — | JS utils, log renderers, history grouping (Vitest) | No |
+| E2E | `tests/e2e/` | — | Dashboard, log explorer, history, settings (Playwright) | Yes (running app) |
+| Live | `tests/live/` | 19 | Real SSH/Slurm reads + throwaway job cancel | Yes |
+
+### How Mock vs Real Clusters Work
+
+- A `mock-cluster` fixture auto-injects a fake cluster into `CLUSTERS` for every test. Unit and integration tests reference this instead of real cluster names.
+- SSH calls are intercepted by the `mock_ssh` fixture which returns canned responses.
+- The `first_real_cluster` fixture resolves the first non-local cluster from `config.json` for use in `local_cluster` marked tests. Skips automatically if no real config is present.
+- Live tests pick their target cluster from `TEST_CLUSTER` env var, or auto-detect the first cluster in `config.json`.
+
+### Environment Variables
+
+- `TEST_CLUSTER` — override target cluster for live tests (default: first cluster in config.json)
+- `TEST_APP_BASE` — app URL for live tests (default: `http://localhost:7272`)
+
 ## Security Notes
 
 - No hard-coded paths or usernames in app logic

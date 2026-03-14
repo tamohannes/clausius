@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "name": "job-monitor-tests",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "vitest": "latest",
+    "jsdom": "latest",
+    "@playwright/test": "latest"
+  }
+}
