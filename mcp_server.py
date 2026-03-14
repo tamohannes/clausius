@@ -133,20 +133,64 @@ def get_job_stats(cluster: str, job_id: str) -> dict:
 
 
 @mcp.tool()
-def get_history(cluster: Optional[str] = None, limit: int = 50) -> list[dict]:
-    """Get past job history, optionally filtered by cluster.
+def get_history(cluster: Optional[str] = None, project: Optional[str] = None, limit: int = 50) -> list[dict]:
+    """Get past job history, optionally filtered by cluster and/or project.
 
     Returns recent completed/failed/cancelled jobs with state, elapsed
-    time, start/end timestamps, and partition.
+    time, start/end timestamps, partition, and project info.
     """
     params = {"limit": str(limit)}
     if cluster:
         params["cluster"] = cluster
+    if project:
+        params["project"] = project
     qs = urllib.parse.urlencode(params)
     data = _api_get(f"/api/history?{qs}")
     if isinstance(data, list):
         return data
     return [data]
+
+
+@mcp.tool()
+def list_projects() -> list[dict]:
+    """List all known projects with job counts and colors.
+
+    Returns projects derived from job name prefixes configured in
+    Settings > Projects. Each entry has: project name, job_count,
+    last_active timestamp, and assigned color.
+    """
+    data = _api_get("/api/projects")
+    if isinstance(data, list):
+        return data
+    return [data]
+
+
+@mcp.tool()
+def get_project_jobs(project: str, cluster: Optional[str] = None, limit: int = 100) -> list[dict]:
+    """Get all jobs for a specific project.
+
+    Combines live running/pending jobs and historical completed/failed
+    jobs for the given project. Optionally filter by cluster.
+    """
+    params = {"limit": str(limit), "project": project}
+    if cluster:
+        params["cluster"] = cluster
+    qs = urllib.parse.urlencode(params)
+    history = _api_get(f"/api/history?{qs}")
+    if not isinstance(history, list):
+        history = [history]
+
+    live_data = _api_get("/api/jobs")
+    live_jobs = []
+    if isinstance(live_data, dict) and live_data.get("status") != "error":
+        for cname, cdata in live_data.items():
+            if cluster and cname != cluster:
+                continue
+            for j in cdata.get("jobs", []):
+                if j.get("project") == project and not j.get("_pinned"):
+                    live_jobs.append(_slim_job(cname, j))
+
+    return live_jobs + [_slim_job(r.get("cluster", ""), r) for r in history]
 
 
 @mcp.tool()
