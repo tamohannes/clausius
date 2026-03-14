@@ -294,6 +294,7 @@ def dismiss_by_state_prefix(cluster, prefixes):
 
 
 def get_history(cluster=None, limit=200):
+    from .jobs import parse_dependency
     con = get_db()
     order = "ORDER BY COALESCE(ended_at, started, submitted, '9999') DESC, id DESC"
     if cluster and cluster != "all":
@@ -301,7 +302,9 @@ def get_history(cluster=None, limit=200):
     else:
         rows = con.execute(f"SELECT * FROM job_history {order} LIMIT ?", (limit,)).fetchall()
     con.close()
-    return [dict(r) for r in rows]
+    jobs = [normalize_job_times_local(dict(r)) for r in rows]
+    _restore_dependency_fields(jobs, parse_dependency)
+    return jobs
 
 
 def repin_recent_terminal_jobs():
