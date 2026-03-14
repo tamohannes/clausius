@@ -449,6 +449,15 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 .logbook-entry-content ul { margin: 4px 0; padding-left: 18px; }
 .logbook-entry-content pre { background: var(--surface); padding: 6px 8px; border-radius: 4px; font-size: 10px; overflow-x: auto; }
 .md-inline-code { background: var(--surface); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+.md-table {
+  width: 100%; border-collapse: collapse; margin: 8px 0;
+  font-family: var(--mono); font-size: 11px;
+}
+.md-table th, .md-table td {
+  padding: 4px 10px; border: 1px solid var(--border); text-align: left;
+}
+.md-table th { background: var(--surface); font-weight: 600; }
+.md-table tr:nth-child(even) td { background: #fafbfe; }
 .logbook-entry-actions {
   display: flex; gap: 4px; margin-top: 4px;
 }
