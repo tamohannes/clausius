@@ -194,7 +194,7 @@ function renderCard(name, data) {
     const groupEntries = groupJobsByDependency(jobs);
 
     const rows = groupEntries.map(([gk, groupJobs], gidx) => {
-      const groupLabel = `${gk} · ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}`;
+      const groupLabel = `${gk} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
 
       // Compute dependency depth for indentation.
       const idSet = new Set(groupJobs.map(j => j.jobid));

@@ -345,6 +345,7 @@ tbody tr.pinned-completed-row:hover { background: #eefaf0; }
   padding-top: 7px;
   padding-bottom: 7px;
 }
+.group-count { color: var(--muted); font-weight: 400; }
 tr.group-bg-0 td { background: #fcfdff; }
 tr.group-bg-1 td { background: #f8fbff; }
 tr.group-bg-2 td { background: #f7fbfa; }
