@@ -160,6 +160,22 @@ def cancel_job(cluster: str, job_id: str) -> dict:
 
 
 @mcp.tool()
+def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
+    """Cancel multiple jobs on a cluster in one call.
+
+    This is destructive — only use when the user explicitly asks to
+    cancel specific jobs. Pass each job ID as a separate list element.
+    Returns per-job results so partial failures are visible.
+    """
+    results = {}
+    for jid in job_ids:
+        results[jid] = _api_post(f"/api/cancel/{urllib.parse.quote(cluster)}/{urllib.parse.quote(str(jid))}")
+    ok = sum(1 for r in results.values() if r.get("status") == "ok")
+    failed = len(results) - ok
+    return {"status": "ok" if failed == 0 else "partial", "cancelled": ok, "failed": failed, "details": results}
+
+
+@mcp.tool()
 def cleanup_history(days: int = 30, dry_run: bool = False) -> dict:
     """Delete history records older than N days and remove their local log files.
 

@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock
 import mcp_server
 from mcp_server import (
     list_jobs, list_log_files, get_job_log,
-    get_job_stats, get_history, cancel_job,
+    get_job_stats, get_history, cancel_job, cancel_jobs,
     cleanup_history, jobs_summary, _slim_job, _api_get,
 )
 
@@ -173,6 +173,37 @@ class TestCancelJob:
         with _mock_api_post({"status": "error", "error": "not found"}):
             result = cancel_job("c1", "bad")
         assert result["status"] == "error"
+
+
+# ── cancel_jobs ──────────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestCancelJobs:
+    def test_all_succeed(self):
+        with _mock_api_post({"status": "ok"}):
+            result = cancel_jobs("c1", ["100", "200", "300"])
+        assert result["status"] == "ok"
+        assert result["cancelled"] == 3
+        assert result["failed"] == 0
+
+    def test_partial_failure(self):
+        call_count = [0]
+        def _mock_post(path):
+            call_count[0] += 1
+            if "200" in path:
+                return {"status": "error", "error": "not found"}
+            return {"status": "ok"}
+        with patch.object(mcp_server, "_api_post", side_effect=_mock_post):
+            result = cancel_jobs("c1", ["100", "200", "300"])
+        assert result["status"] == "partial"
+        assert result["cancelled"] == 2
+        assert result["failed"] == 1
+        assert result["details"]["200"]["status"] == "error"
+
+    def test_empty_list(self):
+        result = cancel_jobs("c1", [])
+        assert result["status"] == "ok"
+        assert result["cancelled"] == 0
 
 
 # ── cleanup_history ──────────────────────────────────────────────────────────
