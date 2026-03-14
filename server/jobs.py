@@ -270,7 +270,13 @@ def poll_cluster(name):
 def _finalize_gone_job(cluster, job_id, prev_job):
     prev_state = prev_job.get("state", "").upper()
     final = sacct_final(cluster, job_id)
-    final_state = (final.get("state", "") or prev_state or "COMPLETED").upper().split()[0]
+    sacct_state = final.get("state", "").upper().split()[0] if final.get("state") else ""
+    if sacct_state:
+        final_state = sacct_state
+    elif prev_state in ("PENDING", ""):
+        final_state = "CANCELLED"
+    else:
+        final_state = prev_state or "COMPLETED"
 
     record = final if final else {
         "jobid": job_id, "name": prev_job.get("name", ""), "state": final_state,
