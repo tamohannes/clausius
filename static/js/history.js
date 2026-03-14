@@ -153,13 +153,14 @@ function _renderHistPage() {
 function histPrev() { histPage--; _renderHistPage(); }
 function histNext() { histPage++; _renderHistPage(); }
 
+function toggleStateFilter(btn) {
+  btn.classList.toggle('active');
+  filterHistory();
+}
+
 function _getCheckedStates() {
-  const cbs = document.querySelectorAll('#hist-state-filters input[type="checkbox"]');
-  const states = [];
-  for (const cb of cbs) {
-    if (cb.checked) states.push(cb.value);
-  }
-  return states;
+  const btns = document.querySelectorAll('#hist-state-filters .hist-state-btn.active');
+  return Array.from(btns).map(b => b.dataset.state);
 }
 
 function filterHistory() {
