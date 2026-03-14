@@ -135,7 +135,9 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
     ).fetchone()
     current_visible = row["board_visible"] if row else None
 
-    if set_board_visible is not None:
+    if cluster == "local":
+        bv = 0
+    elif set_board_visible is not None:
         bv = set_board_visible
     elif terminal:
         bv = 1 if current_visible != 0 else 0
@@ -189,12 +191,12 @@ def get_board_pinned(cluster=None):
     con = get_db()
     if cluster:
         rows = con.execute(
-            "SELECT * FROM job_history WHERE cluster=? AND board_visible=1 ORDER BY id DESC",
+            "SELECT * FROM job_history WHERE cluster=? AND board_visible=1 AND cluster != 'local' ORDER BY id DESC",
             (cluster,)
         ).fetchall()
     else:
         rows = con.execute(
-            "SELECT * FROM job_history WHERE board_visible=1 ORDER BY id DESC"
+            "SELECT * FROM job_history WHERE board_visible=1 AND cluster != 'local' ORDER BY id DESC"
         ).fetchall()
     con.close()
     jobs = [normalize_job_times_local(dict(r)) for r in rows]
@@ -308,7 +310,7 @@ def get_history(cluster=None, limit=200):
 
 
 def repin_recent_terminal_jobs():
-    """Re-pin recent terminal jobs on startup."""
+    """Re-pin recent terminal jobs on startup and dismiss stale local entries."""
     con = get_db()
     terminal_like = " OR ".join(f"state LIKE '{s}%'" for s in PINNABLE_TERMINAL_STATES)
     con.execute(f"""
@@ -318,5 +320,8 @@ def repin_recent_terminal_jobs():
           AND board_visible != 1
           AND (ended_at >= datetime('now', '-3 days') OR ended_at IS NULL)
     """)
+    # Local PIDs are ephemeral — dismiss all local entries on startup since
+    # the processes are almost certainly gone after a restart.
+    con.execute("UPDATE job_history SET board_visible=0 WHERE cluster='local'")
     con.commit()
     con.close()
