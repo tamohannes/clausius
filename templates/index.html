@@ -88,36 +88,49 @@
 
     <!-- Project detail view -->
     <div class="project-view" id="project-view">
-      <main>
-        <div class="project-detail-head">
-          <button class="btn" onclick="showTab('live')">← Dashboard</button>
-          <span class="project-detail-title" id="project-detail-title"></span>
-          <button class="btn" onclick="refreshProjectPage()" style="margin-left:auto">↻ refresh</button>
-        </div>
-        <div class="proj-stats-bar" id="proj-stats-bar"></div>
-        <div class="proj-live-section" id="proj-live-section"></div>
-        <div class="history-filter">
-          <input id="proj-search" type="text" placeholder="filter by name or job id…" oninput="filterProjectRuns()" />
-          <div class="hist-state-filters" id="proj-state-filters">
-            <button class="hist-state-btn s-COMPLETED active" data-state="COMPLETED" onclick="toggleProjStateFilter(this)">completed</button>
-            <button class="hist-state-btn s-FAILED active" data-state="FAILED" onclick="toggleProjStateFilter(this)">failed</button>
-            <button class="hist-state-btn s-CANCELLED active" data-state="CANCELLED" onclick="toggleProjStateFilter(this)">cancelled</button>
-            <button class="hist-state-btn s-FAILED active" data-state="TIMEOUT" onclick="toggleProjStateFilter(this)">timeout</button>
-            <button class="hist-state-btn s-RUNNING active" data-state="RUNNING" onclick="toggleProjStateFilter(this)">running</button>
-            <button class="hist-state-btn s-PENDING active" data-state="PENDING" onclick="toggleProjStateFilter(this)">pending</button>
+      <div class="project-detail-head">
+        <button class="btn" onclick="showTab('live')">← Dashboard</button>
+        <span class="project-detail-title" id="project-detail-title"></span>
+        <button class="btn" onclick="refreshProjectPage()" style="margin-left:auto">↻ refresh</button>
+      </div>
+      <div class="proj-layout">
+        <div class="proj-main">
+          <div class="proj-stats-bar" id="proj-stats-bar"></div>
+          <div class="proj-live-section" id="proj-live-section"></div>
+          <div class="history-filter">
+            <input id="proj-search" type="text" placeholder="filter by name or job id…" oninput="filterProjectRuns()" />
+            <div class="hist-state-filters" id="proj-state-filters">
+              <button class="hist-state-btn s-COMPLETED active" data-state="COMPLETED" onclick="toggleProjStateFilter(this)">completed</button>
+              <button class="hist-state-btn s-FAILED active" data-state="FAILED" onclick="toggleProjStateFilter(this)">failed</button>
+              <button class="hist-state-btn s-CANCELLED active" data-state="CANCELLED" onclick="toggleProjStateFilter(this)">cancelled</button>
+              <button class="hist-state-btn s-FAILED active" data-state="TIMEOUT" onclick="toggleProjStateFilter(this)">timeout</button>
+              <button class="hist-state-btn s-RUNNING active" data-state="RUNNING" onclick="toggleProjStateFilter(this)">running</button>
+              <button class="hist-state-btn s-PENDING active" data-state="PENDING" onclick="toggleProjStateFilter(this)">pending</button>
+            </div>
           </div>
+          <div class="history-table-wrap">
+            <table id="project-hist-table">
+              <thead><tr>
+                <th>Cluster</th><th>ID</th><th>Name</th>
+                <th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th></th>
+              </tr></thead>
+              <tbody id="project-hist-body"></tbody>
+            </table>
+          </div>
+          <div class="hist-pagination" id="proj-pagination"></div>
         </div>
-        <div class="history-table-wrap">
-          <table id="project-hist-table">
-            <thead><tr>
-              <th>Cluster</th><th>ID</th><th>Name</th>
-              <th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th></th>
-            </tr></thead>
-            <tbody id="project-hist-body"></tbody>
-          </table>
+        <div class="logbook-panel" id="logbook-panel">
+          <div class="logbook-head">
+            <select id="logbook-select" onchange="switchLogbook()"></select>
+            <button class="btn" onclick="promptNewLogbook()" title="new logbook">+</button>
+          </div>
+          <div class="logbook-add">
+            <textarea id="logbook-new-entry" placeholder="Add a note… use @run-name to reference jobs" rows="3"></textarea>
+            <button class="btn" onclick="addLogbookEntry()">add entry</button>
+          </div>
+          <div class="logbook-entries" id="logbook-entries"></div>
         </div>
-        <div class="hist-pagination" id="proj-pagination"></div>
-      </main>
+      </div>
     </div>
 
     <!-- File Explorer view -->
@@ -273,6 +286,7 @@
 <script src="{{ url_for('static', filename='js/logs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/explorer.js') }}"></script>
 <script src="{{ url_for('static', filename='js/projects.js') }}"></script>
+<script src="{{ url_for('static', filename='js/logbooks.js') }}"></script>
 <script src="{{ url_for('static', filename='js/settings.js') }}"></script>
 </body>
 </html>

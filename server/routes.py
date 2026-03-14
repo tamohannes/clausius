@@ -611,3 +611,57 @@ def api_settings_post():
         return jsonify({"status": "error", "error": str(exc)}), 500
 
     return jsonify({"status": "ok", "settings": settings_response()})
+
+
+# ─── Logbook routes ──────────────────────────────────────────────────────────
+
+from .logbooks import (
+    list_logbooks as _list_logbooks,
+    read_logbook as _read_logbook,
+    add_entry as _add_entry,
+    update_entry as _update_entry,
+    create_logbook as _create_logbook,
+    delete_logbook as _delete_logbook,
+)
+
+
+@api.route("/api/logbooks/<project>")
+def api_logbooks_list(project):
+    return jsonify(_list_logbooks(project))
+
+
+@api.route("/api/logbook/<project>/<name>")
+def api_logbook_read(project, name):
+    return jsonify(_read_logbook(project, name))
+
+
+@api.route("/api/logbook/<project>/<name>", methods=["POST"])
+def api_logbook_add_entry(project, name):
+    payload = request.get_json(silent=True) or {}
+    content = payload.get("content", "").strip()
+    if not content:
+        return jsonify({"status": "error", "error": "No content provided"}), 400
+    return jsonify(_add_entry(project, name, content))
+
+
+@api.route("/api/logbook/<project>/<name>/<int:index>", methods=["PUT"])
+def api_logbook_update_entry(project, name, index):
+    payload = request.get_json(silent=True) or {}
+    content = payload.get("content", "").strip()
+    if not content:
+        return jsonify({"status": "error", "error": "No content provided"}), 400
+    return jsonify(_update_entry(project, name, index, content))
+
+
+@api.route("/api/logbook/<project>/<name>", methods=["DELETE"])
+def api_logbook_delete(project, name):
+    return jsonify(_delete_logbook(project, name))
+
+
+@api.route("/api/logbook/<project>", methods=["POST"])
+def api_logbook_create(project):
+    payload = request.get_json(silent=True) or {}
+    name = payload.get("name", "").strip()
+    if not name:
+        return jsonify({"status": "error", "error": "No name provided"}), 400
+    return jsonify(_create_logbook(project, name))
