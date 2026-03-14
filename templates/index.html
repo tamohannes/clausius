@@ -55,6 +55,14 @@
             {% for name in clusters %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
           </select>
           <input id="hist-search" type="text" placeholder="filter by name or job id…" oninput="filterHistory()" />
+          <div class="hist-state-filters" id="hist-state-filters">
+            <label class="hist-state-cb"><input type="checkbox" value="COMPLETED" checked onchange="filterHistory()"><span class="state-chip s-COMPLETED" style="font-size:9px">completed</span></label>
+            <label class="hist-state-cb"><input type="checkbox" value="FAILED" checked onchange="filterHistory()"><span class="state-chip s-FAILED" style="font-size:9px">failed</span></label>
+            <label class="hist-state-cb"><input type="checkbox" value="CANCELLED" checked onchange="filterHistory()"><span class="state-chip s-CANCELLED" style="font-size:9px">cancelled</span></label>
+            <label class="hist-state-cb"><input type="checkbox" value="TIMEOUT" checked onchange="filterHistory()"><span class="state-chip s-FAILED" style="font-size:9px">timeout</span></label>
+            <label class="hist-state-cb"><input type="checkbox" value="RUNNING" checked onchange="filterHistory()"><span class="state-chip s-RUNNING" style="font-size:9px">running</span></label>
+            <label class="hist-state-cb"><input type="checkbox" value="PENDING" checked onchange="filterHistory()"><span class="state-chip s-PENDING" style="font-size:9px">pending</span></label>
+          </div>
           <span style="margin-left:auto;display:flex;align-items:center;gap:5px">
             <span style="font-family:var(--mono);font-size:10px;color:var(--muted)">older than</span>
             <input type="number" id="cleanup-days" value="30" min="1" max="365" style="width:50px;font-family:var(--mono);font-size:11px;padding:4px 6px;border-radius:5px;border:1px solid var(--border)">

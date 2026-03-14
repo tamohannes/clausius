@@ -153,11 +153,24 @@ function _renderHistPage() {
 function histPrev() { histPage--; _renderHistPage(); }
 function histNext() { histPage++; _renderHistPage(); }
 
+function _getCheckedStates() {
+  const cbs = document.querySelectorAll('#hist-state-filters input[type="checkbox"]');
+  const states = [];
+  for (const cb of cbs) {
+    if (cb.checked) states.push(cb.value);
+  }
+  return states;
+}
+
 function filterHistory() {
   const q = document.getElementById('hist-search').value.toLowerCase();
-  const filtered = q
-    ? historyData.filter(r => (r.job_name||'').toLowerCase().includes(q) || (r.job_id||'').includes(q))
-    : historyData;
+  const allowedStates = _getCheckedStates();
+  const filtered = historyData.filter(r => {
+    const st = (r.state || '').toUpperCase().split(' ')[0];
+    if (!allowedStates.some(s => st.startsWith(s))) return false;
+    if (q && !(r.job_name||'').toLowerCase().includes(q) && !(r.job_id||'').includes(q)) return false;
+    return true;
+  });
   histPage = 0;
   _buildHistGroups(filtered);
   _renderHistPage();
