@@ -102,11 +102,11 @@ function fmtTime(s) {
 }
 
 function parseGpus(nodes, gres) {
-  if (!gres || gres === 'cpu' || gres === '(null)') return null;
-  // formats: "gpu:8", "gpu:h100:8", "gpu:a100:8(IDX:...)"
+  if (!gres || gres === 'cpu' || gres === '(null)' || gres === 'N/A' || gres === 'local') return null;
   const m = gres.match(/gpu[^:]*:(?:[^:]+:)?(\d+)/);
   if (!m) return null;
   const perNode = parseInt(m[1], 10);
+  if (perNode === 0) return null;
   const n = parseInt(nodes, 10) || 1;
   const total = perNode * n;
   return total === perNode ? `${total} GPU${total !== 1 ? 's' : ''}` : `${total} GPUs (${n}×${perNode})`;
