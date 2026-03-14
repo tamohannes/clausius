@@ -499,13 +499,47 @@ function _mdInline(text) {
   return s;
 }
 
+function _isTableRow(line) {
+  const t = line.trim();
+  return t.startsWith('|') && t.endsWith('|') && t.includes('|');
+}
+
+function _isTableSep(line) {
+  return /^\|[\s:|-]+\|$/.test(line.trim());
+}
+
+function _renderTableRows(tableLines) {
+  if (tableLines.length < 2) return tableLines.map(l => `<p>${_mdInline(l)}</p>`).join('');
+  const parseRow = (line, tag) => {
+    const cells = line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+    return `<tr>${cells.map(c => `<${tag}>${_mdInline(c)}</${tag}>`).join('')}</tr>`;
+  };
+  let html = '<table class="md-table"><thead>' + parseRow(tableLines[0], 'th') + '</thead><tbody>';
+  const start = _isTableSep(tableLines[1]) ? 2 : 1;
+  for (let i = start; i < tableLines.length; i++) {
+    html += parseRow(tableLines[i], 'td');
+  }
+  html += '</tbody></table>';
+  return html;
+}
+
 function markdownToHtml(raw) {
   const lines = String(raw || '').split('\n');
   let html = '';
   let inCode = false;
   let inList = false;
+  let tableBuffer = [];
+
+  function flushTable() {
+    if (tableBuffer.length) {
+      html += _renderTableRows(tableBuffer);
+      tableBuffer = [];
+    }
+  }
+
   for (const line of lines) {
     if (line.trim().startsWith('```')) {
+      flushTable();
       if (!inCode) {
         if (inList) { html += '</ul>'; inList = false; }
         html += '<pre><code>';
@@ -520,6 +554,12 @@ function markdownToHtml(raw) {
       html += escapeHtml(line) + '\n';
       continue;
     }
+    if (_isTableRow(line)) {
+      if (inList) { html += '</ul>'; inList = false; }
+      tableBuffer.push(line);
+      continue;
+    }
+    flushTable();
     const h = line.match(/^(#{1,3})\s+(.*)$/);
     if (h) {
       if (inList) { html += '</ul>'; inList = false; }
@@ -537,6 +577,7 @@ function markdownToHtml(raw) {
     if (!line.trim()) html += '<p></p>';
     else html += `<p>${_mdInline(line)}</p>`;
   }
+  flushTable();
   if (inList) html += '</ul>';
   if (inCode) html += '</code></pre>';
   return html;
