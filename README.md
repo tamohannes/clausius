@@ -121,6 +121,32 @@ Primary configuration file. Editable from the UI Settings panel or directly.
 - `JOB_MONITOR_SSH_KEY` (default: `~/.ssh/id_ed25519`)
 - `JOB_MONITOR_MOUNT_MAP` (JSON map of cluster -> mount roots)
 
+## Job Name Prefix Protocol
+
+Jobs are grouped by project using a name prefix convention:
+
+```
+<project>_<run-name>
+```
+
+| Component | Rules | Example |
+|-----------|-------|---------|
+| `<project>` | Lowercase letters, digits, hyphens. Starts with a letter. | `artsiv`, `hle`, `nemo-rl` |
+| `_` | Required underscore separator | — |
+| `<run-name>` | The experiment/eval name | `eval-math`, `train-v3` |
+
+Set in NeMo-Skills cluster config:
+
+```yaml
+job_name_prefix: "artsiv_"
+```
+
+The monitor auto-detects projects from the `word_` pattern on first encounter, assigning a color and emoji. Customize in Settings > Projects.
+
+Run name suffixes for dependency chain auto-detection:
+- `*-judge-rs<N>` — linked as child of the base eval
+- `*-summarize-results` — linked as child of the judge run
+
 ## API Endpoints
 
 | Method | Endpoint | Purpose |
