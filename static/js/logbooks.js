@@ -3,6 +3,9 @@
 let _lbCurrentLogbook = '';
 let _lbEditingIndex = -1;
 let _lbResizing = false;
+let _lbRunNames = [];
+let _lbSuggestTarget = null;
+let _lbSuggestStart = -1;
 
 (function setupLogbookResizer() {
   document.addEventListener('mousedown', e => {
@@ -209,3 +212,124 @@ async function promptNewLogbook() {
     toast('Failed to create logbook', 'error');
   }
 }
+
+// ── @ autocomplete ──────────────────────────────────────────────────────────
+
+async function _loadRunNames(project) {
+  try {
+    const res = await fetch(`/api/history?project=${encodeURIComponent(project)}&limit=500`);
+    const rows = await res.json();
+    const names = new Set();
+    for (const r of rows) {
+      if (r.job_name) names.add(r.job_name);
+    }
+    _lbRunNames = Array.from(names).sort();
+  } catch (_) {
+    _lbRunNames = [];
+  }
+}
+
+function _getSuggestBox() {
+  let box = document.getElementById('lb-suggest-box');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'lb-suggest-box';
+    box.className = 'lb-suggest-box';
+    document.body.appendChild(box);
+  }
+  return box;
+}
+
+function _hideSuggest() {
+  const box = document.getElementById('lb-suggest-box');
+  if (box) box.style.display = 'none';
+  _lbSuggestTarget = null;
+  _lbSuggestStart = -1;
+}
+
+function _showSuggest(textarea, query) {
+  const matches = _lbRunNames.filter(n => n.toLowerCase().includes(query.toLowerCase())).slice(0, 10);
+  const box = _getSuggestBox();
+  if (!matches.length) { box.style.display = 'none'; return; }
+
+  box.innerHTML = matches.map((name, i) =>
+    `<div class="lb-suggest-item${i === 0 ? ' active' : ''}" data-name="${name}">${name}</div>`
+  ).join('');
+
+  // Position near the cursor in the textarea
+  const rect = textarea.getBoundingClientRect();
+  box.style.left = rect.left + 'px';
+  box.style.top = (rect.bottom + 2) + 'px';
+  box.style.width = Math.max(rect.width, 250) + 'px';
+  box.style.display = 'block';
+
+  box.querySelectorAll('.lb-suggest-item').forEach(item => {
+    item.addEventListener('mousedown', e => {
+      e.preventDefault();
+      _insertSuggestion(textarea, item.dataset.name);
+    });
+  });
+}
+
+function _insertSuggestion(textarea, name) {
+  const before = textarea.value.substring(0, _lbSuggestStart);
+  const after = textarea.value.substring(textarea.selectionStart);
+  textarea.value = before + name + ' ' + after;
+  const pos = before.length + name.length + 1;
+  textarea.setSelectionRange(pos, pos);
+  textarea.focus();
+  _hideSuggest();
+}
+
+document.addEventListener('input', e => {
+  const ta = e.target;
+  if (ta.tagName !== 'TEXTAREA') return;
+  if (!ta.closest('.logbook-panel') && !ta.closest('.logbook-entry')) return;
+
+  const val = ta.value;
+  const pos = ta.selectionStart;
+  const textBefore = val.substring(0, pos);
+  const atMatch = textBefore.match(/@([\w_-]*)$/);
+
+  if (atMatch) {
+    _lbSuggestTarget = ta;
+    _lbSuggestStart = pos - atMatch[1].length;
+    _showSuggest(ta, atMatch[1]);
+  } else {
+    _hideSuggest();
+  }
+});
+
+document.addEventListener('keydown', e => {
+  const box = document.getElementById('lb-suggest-box');
+  if (!box || box.style.display === 'none') return;
+
+  const items = box.querySelectorAll('.lb-suggest-item');
+  const active = box.querySelector('.lb-suggest-item.active');
+  let idx = Array.from(items).indexOf(active);
+
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (active) active.classList.remove('active');
+    idx = (idx + 1) % items.length;
+    items[idx].classList.add('active');
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (active) active.classList.remove('active');
+    idx = (idx - 1 + items.length) % items.length;
+    items[idx].classList.add('active');
+  } else if (e.key === 'Enter' || e.key === 'Tab') {
+    if (active && _lbSuggestTarget) {
+      e.preventDefault();
+      _insertSuggestion(_lbSuggestTarget, active.dataset.name);
+    }
+  } else if (e.key === 'Escape') {
+    _hideSuggest();
+  }
+});
+
+document.addEventListener('blur', e => {
+  if (e.target.tagName === 'TEXTAREA') {
+    setTimeout(_hideSuggest, 150);
+  }
+}, true);
