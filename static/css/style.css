@@ -292,6 +292,14 @@ td.bold { font-weight: 500; }
 .s-FAILED     { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-bd); }
 .s-CANCELLED  { background: var(--gray-bg);  color: var(--muted); border: 1px solid var(--gray-bd); }
 .s-COMPLETED  { background: var(--gray-bg);  color: var(--green); border: 1px solid var(--green-bd); }
+.fail-reason {
+  font-family: var(--mono); font-size: 9px; color: var(--red);
+  margin-left: 4px; opacity: 0.8;
+}
+.exit-code {
+  font-family: var(--mono); font-size: 9px; color: var(--muted);
+  margin-left: 4px;
+}
 .s-COMPLETING { background: var(--cyan-bg);  color: var(--cyan);  border: 1px solid var(--cyan-bd); }
 .s-OTHER      { background: var(--gray-bg);  color: var(--muted); border: 1px solid var(--gray-bd); }
 

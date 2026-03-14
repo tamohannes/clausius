@@ -243,7 +243,7 @@ function renderCard(name, data) {
       return `<tr class="${rowClass}" style="${_rowBg}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
-        <td>${stateChip(j.state, j.progress)} ${depBadge}</td>
+        <td>${stateChip(j.state, j.progress, j.reason, j.exit_code)} ${depBadge}</td>
         <td>${quickActions}</td>
         <td class="dim">${startTime}</td>
         <td class="dim">${endTime}</td>
