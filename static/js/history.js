@@ -90,7 +90,7 @@ function _renderHistPage() {
   let html = '';
   pageGroups.forEach((g, gidx) => {
     const groupJobs = g.jobs;
-    const groupLabel = `${g.cluster} · ${g.label} · ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}`;
+    const groupLabel = `${g.cluster} · ${g.label} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
 
     if (groupJobs.length > 1) {
       html += `<tr class="group-head-row"><td colspan="10" style="padding:4px 16px">${groupLabel}</td></tr>`;
