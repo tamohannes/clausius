@@ -41,6 +41,7 @@ async function openProject(projectName) {
 
   await _fetchProjectData();
   loadLogbookPanel(projectName);
+  _loadRunNames(projectName);
 
   if (_projRefreshTimer) clearInterval(_projRefreshTimer);
   _projRefreshTimer = setInterval(() => {

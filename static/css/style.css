@@ -474,6 +474,20 @@ tr.group-bg-3:hover td { background: #eef5ff; }
 }
 .run-ref:hover { text-decoration: underline; }
 
+.lb-suggest-box {
+  position: fixed; z-index: 1000; display: none;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  max-height: 200px; overflow-y: auto;
+}
+.lb-suggest-item {
+  font-family: var(--mono); font-size: 11px; padding: 6px 10px;
+  cursor: pointer; color: var(--text);
+}
+.lb-suggest-item:hover, .lb-suggest-item.active {
+  background: var(--accent-bg, #e8f0fe); color: var(--accent);
+}
+
 .mount-panel { display: grid; gap: 7px; }
 .mount-item {
   border: 1px solid var(--border);
