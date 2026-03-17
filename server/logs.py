@@ -350,8 +350,9 @@ if [ -z "$LOGDIR" ]; then
 fi
 {db_logdir_clause}
 if [ -n "$LOGDIR" ] && [ -d "$LOGDIR" ]; then
-  find "$LOGDIR" -maxdepth 1 -type f -name "*$JOB*" 2>/dev/null | sort | while read F; do
-    emit "$(basename "$F")" "$F"
+  ls -1 "$LOGDIR" 2>/dev/null | grep "$JOB" | sort | while read NAME; do
+    F="$LOGDIR/$NAME"
+    [ -f "$F" ] && emit "$NAME" "$F"
   done
 fi
 """

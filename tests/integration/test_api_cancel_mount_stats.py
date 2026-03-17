@@ -116,3 +116,62 @@ class TestApiClearFailed:
         upsert_job(mock_cluster, {"jobid": "3", "state": "FAILED"}, terminal=True)
         resp = client.post(f"/api/clear_failed_job/{mock_cluster}/3")
         assert resp.get_json()["status"] == "ok"
+
+
+@pytest.mark.integration
+class TestApiRunScript:
+    def test_unknown_cluster_404(self, client, mock_ssh):
+        resp = client.post("/api/run_script/nonexistent", json={"script": "print(1)"})
+        assert resp.status_code == 404
+
+    def test_local_not_supported(self, client, mock_ssh):
+        resp = client.post("/api/run_script/local", json={"script": "print(1)"})
+        assert resp.status_code == 400
+        assert resp.get_json()["status"] == "error"
+
+    def test_missing_script(self, client, mock_ssh, mock_cluster):
+        resp = client.post(f"/api/run_script/{mock_cluster}", json={})
+        assert resp.status_code == 400
+        assert "No script" in resp.get_json()["error"]
+
+    def test_invalid_interpreter(self, client, mock_ssh, mock_cluster):
+        resp = client.post(f"/api/run_script/{mock_cluster}",
+                           json={"script": "echo hi", "interpreter": "ruby"})
+        assert resp.status_code == 400
+        assert "interpreter" in resp.get_json()["error"]
+
+    def test_python3_success(self, client, mock_ssh, mock_cluster):
+        mock_ssh.set(mock_cluster, "base64", ("hello world\n", ""))
+        resp = client.post(f"/api/run_script/{mock_cluster}",
+                           json={"script": "print('hello world')"})
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["interpreter"] == "python3"
+        assert data["cluster"] == mock_cluster
+        assert "stdout" in data
+        assert "stderr" in data
+
+    def test_bash_interpreter(self, client, mock_ssh, mock_cluster):
+        mock_ssh.set(mock_cluster, "base64", ("hello\n", ""))
+        resp = client.post(f"/api/run_script/{mock_cluster}",
+                           json={"script": "echo hello", "interpreter": "bash"})
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["interpreter"] == "bash"
+
+    def test_timeout_clamped(self, client, mock_ssh, mock_cluster):
+        mock_ssh.set(mock_cluster, "base64", ("", ""))
+        resp = client.post(f"/api/run_script/{mock_cluster}",
+                           json={"script": "print(1)", "timeout": 9999})
+        assert resp.get_json()["status"] == "ok"
+
+    def test_script_base64_encoded_in_command(self, client, mock_ssh, mock_cluster):
+        """Verify the script is sent base64-encoded so special chars work."""
+        import base64
+        script = "print('hello \"world\"')\nprint(1+1)"
+        mock_ssh.set(mock_cluster, "base64", ("hello \"world\"\n2\n", ""))
+        resp = client.post(f"/api/run_script/{mock_cluster}", json={"script": script})
+        assert resp.get_json()["status"] == "ok"
+        # Verify the SSH command contained base64-encoded content
+        calls = mock_ssh._calls
+        assert any("base64" in cmd for _, cmd in calls)

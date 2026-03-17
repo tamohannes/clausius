@@ -11,6 +11,7 @@ from mcp_server import (
     list_projects, get_project_jobs,
     cleanup_history, jobs_summary, _slim_job, _api_get,
     get_mounts, mount_cluster, clear_failed, clear_completed,
+    run_script,
 )
 
 
@@ -399,3 +400,57 @@ class TestClearCompleted:
             mock.return_value = {"status": "ok"}
             clear_completed("dfw")
             assert "/api/clear_completed/dfw" in mock.call_args[0][0]
+
+
+# ── run_script ───────────────────────────────────────────────────────────────
+
+@pytest.mark.mcp
+class TestRunScript:
+    def test_success(self):
+        resp = {"status": "ok", "stdout": "hello world\n", "stderr": "", "interpreter": "python3", "cluster": "dfw"}
+        with patch.object(mcp_server, "_api_post_json", return_value=resp):
+            result = run_script("dfw", "print('hello world')")
+        assert result["status"] == "ok"
+        assert result["stdout"] == "hello world\n"
+
+    def test_error_propagated(self):
+        resp = {"status": "error", "error": "Unknown cluster"}
+        with patch.object(mcp_server, "_api_post_json", return_value=resp):
+            result = run_script("bad", "print(1)")
+        assert result["status"] == "error"
+
+    def test_default_interpreter_python3(self):
+        with patch.object(mcp_server, "_api_post_json") as mock:
+            mock.return_value = {"status": "ok", "stdout": "", "stderr": ""}
+            run_script("ord", "print(1)")
+            payload = mock.call_args[0][1]
+            assert payload["interpreter"] == "python3"
+
+    def test_bash_interpreter(self):
+        with patch.object(mcp_server, "_api_post_json") as mock:
+            mock.return_value = {"status": "ok", "stdout": "hi\n", "stderr": ""}
+            run_script("ord", "echo hi", interpreter="bash")
+            payload = mock.call_args[0][1]
+            assert payload["interpreter"] == "bash"
+
+    def test_timeout_passed(self):
+        with patch.object(mcp_server, "_api_post_json") as mock:
+            mock.return_value = {"status": "ok", "stdout": "", "stderr": ""}
+            run_script("ord", "import time; time.sleep(1)", timeout=60)
+            payload = mock.call_args[0][1]
+            assert payload["timeout"] == 60
+
+    def test_calls_correct_endpoint(self):
+        with patch.object(mcp_server, "_api_post_json") as mock:
+            mock.return_value = {"status": "ok", "stdout": "", "stderr": ""}
+            run_script("dfw", "print(1)")
+            url = mock.call_args[0][0]
+            assert "/api/run_script/dfw" in url
+
+    def test_script_passed_in_payload(self):
+        script = "import json\nprint(json.dumps({'a': 1}))"
+        with patch.object(mcp_server, "_api_post_json") as mock:
+            mock.return_value = {"status": "ok", "stdout": '{"a": 1}\n', "stderr": ""}
+            run_script("ord", script)
+            payload = mock.call_args[0][1]
+            assert payload["script"] == script
