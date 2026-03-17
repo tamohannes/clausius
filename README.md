@@ -71,6 +71,7 @@ Lightweight Flask dashboard for monitoring, exploring, and managing Slurm jobs a
 ### MCP Server (AI Agent API)
 - Stdio-based MCP server (`mcp_server.py`) for Cursor and other MCP-compatible agents
 - Job tools: `list_jobs`, `get_job_log`, `list_log_files`, `get_job_stats`, `get_history`, `list_projects`, `get_project_jobs`, `get_run_info`, `cancel_job`, `cancel_jobs`, `cleanup_history`
+- Script execution: `run_script(cluster, script, interpreter?, timeout?)` — run Python/bash on the cluster and return stdout/stderr; lets agents analyse eval results without raw SSH
 - Mount tools: `get_mounts`, `mount_cluster`
 - Board tools: `clear_failed`, `clear_completed`
 - Logbook tools: `list_logbooks`, `read_logbook`, `add_logbook_entry`, `update_logbook_entry`, `delete_logbook_entry`, `rename_logbook`, `create_logbook`, `delete_logbook`
@@ -219,6 +220,7 @@ Run name suffixes for dependency chain auto-detection:
 | POST | `/api/cancel/<cluster>/<job_id>` | Cancel a single job |
 | POST | `/api/cancel_jobs/<cluster>` | Cancel multiple jobs (JSON body: `job_ids`) |
 | POST | `/api/cancel_all/<cluster>` | Cancel all jobs on cluster |
+| POST | `/api/run_script/<cluster>` | Run script on cluster via SSH (JSON body: `script`, `interpreter`, `timeout`) |
 | POST | `/api/clear_failed/<cluster>` | Dismiss all failed pins |
 | POST | `/api/clear_failed_job/<cluster>/<job_id>` | Dismiss a single failed pin |
 | POST | `/api/clear_completed/<cluster>` | Dismiss completed pins |

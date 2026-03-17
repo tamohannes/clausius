@@ -412,6 +412,50 @@ def api_cancel_all(cluster):
         return jsonify({"status": "error", "error": str(e)})
 
 
+@api.route("/api/run_script/<cluster>", methods=["POST"])
+def api_run_script(cluster):
+    """Run an arbitrary script on a cluster via SSH and return the output.
+
+    Body JSON:
+      script      — the script source code (required)
+      interpreter — "python3" | "bash" | "sh" (default: "python3")
+      timeout     — seconds, 1-300 (default: 120)
+    """
+    import base64
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    if cluster == "local":
+        return jsonify({"status": "error", "error": "run_script is not supported for the local cluster"}), 400
+
+    payload = request.get_json(silent=True) or {}
+    script = payload.get("script", "").strip()
+    if not script:
+        return jsonify({"status": "error", "error": "No script provided"}), 400
+
+    interpreter = payload.get("interpreter", "python3").strip()
+    allowed_interpreters = {"python3", "python", "bash", "sh"}
+    if interpreter not in allowed_interpreters:
+        return jsonify({"status": "error", "error": f"interpreter must be one of: {', '.join(sorted(allowed_interpreters))}"}), 400
+
+    timeout = int(payload.get("timeout", 120))
+    timeout = max(1, min(timeout, 300))
+
+    # Base64-encode the script to safely pass any content through SSH
+    encoded = base64.b64encode(script.encode()).decode()
+    cmd = f"echo '{encoded}' | base64 -d | {interpreter}"
+    try:
+        stdout, stderr = ssh_run_with_timeout(cluster, cmd, timeout_sec=timeout)
+        return jsonify({
+            "status": "ok",
+            "stdout": stdout,
+            "stderr": stderr,
+            "interpreter": interpreter,
+            "cluster": cluster,
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)})
+
+
 @api.route("/api/stats/<cluster>/<job_id>")
 def api_stats(cluster, job_id):
     if cluster not in CLUSTERS:

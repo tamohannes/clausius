@@ -7,18 +7,50 @@ let _lbRunNames = [];
 let _lbSuggestTarget = null;
 let _lbSuggestStart = -1;
 let _lbPanelVisible = false;
+const LOGBOOK_WIDTH_KEY = 'ncluster.logbookWidth';
+const LOGBOOK_MIN_WIDTH = 280;
+const LOGBOOK_MAX_WIDTH = 800;
+
+function _clampLogbookWidth(width) {
+  const panel = document.getElementById('logbook-panel');
+  const parent = panel && panel.parentElement;
+  const parentWidth = parent ? parent.getBoundingClientRect().width : 0;
+  const maxByParent = parentWidth ? Math.max(LOGBOOK_MIN_WIDTH, Math.floor(parentWidth - 220)) : LOGBOOK_MAX_WIDTH;
+  const maxW = Math.min(LOGBOOK_MAX_WIDTH, maxByParent);
+  return Math.min(maxW, Math.max(LOGBOOK_MIN_WIDTH, width));
+}
+
+function _applyLogbookWidth(width) {
+  const panel = document.getElementById('logbook-panel');
+  if (!panel) return;
+  const next = _clampLogbookWidth(width);
+  panel.style.width = `${next}px`;
+}
+
+function _restoreLogbookWidth() {
+  try {
+    const saved = parseInt(localStorage.getItem(LOGBOOK_WIDTH_KEY) || '', 10);
+    if (!Number.isNaN(saved)) _applyLogbookWidth(saved);
+  } catch (_) {}
+}
 
 function toggleLogbookPanel() {
   _lbPanelVisible = !_lbPanelVisible;
   const panel = document.getElementById('logbook-panel');
-  if (panel) panel.style.display = _lbPanelVisible ? '' : 'none';
+  if (panel) {
+    panel.style.display = _lbPanelVisible ? '' : 'none';
+    if (_lbPanelVisible) _restoreLogbookWidth();
+  }
   try { sessionStorage.setItem('ncluster.logbookOpen', _lbPanelVisible ? '1' : '0'); } catch (_) {}
 }
 
 function _restoreLogbookState() {
   try { _lbPanelVisible = sessionStorage.getItem('ncluster.logbookOpen') === '1'; } catch (_) {}
   const panel = document.getElementById('logbook-panel');
-  if (panel) panel.style.display = _lbPanelVisible ? '' : 'none';
+  if (panel) {
+    panel.style.display = _lbPanelVisible ? '' : 'none';
+    _restoreLogbookWidth();
+  }
 }
 
 (function setupLogbookResizer() {
@@ -33,12 +65,12 @@ function _restoreLogbookState() {
     const panel = document.getElementById('logbook-panel');
     if (!panel) return;
     const parentRect = panel.parentElement.getBoundingClientRect();
-    let w = parentRect.right - e.clientX;
-    if (w < 280) w = 280;
-    if (w > 800) w = 800;
-    panel.style.width = w + 'px';
+    const w = _clampLogbookWidth(parentRect.right - e.clientX);
+    panel.style.width = `${w}px`;
+    try { localStorage.setItem(LOGBOOK_WIDTH_KEY, String(w)); } catch (_) {}
   });
   document.addEventListener('mouseup', () => { _lbResizing = false; });
+  window.addEventListener('resize', () => { _restoreLogbookWidth(); });
 })();
 
 async function loadLogbookPanel(project) {

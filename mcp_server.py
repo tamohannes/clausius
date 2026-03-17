@@ -248,6 +248,45 @@ def get_run_info(cluster: str, root_job_id: str) -> dict:
     return _api_get(f"/api/run_info/{urllib.parse.quote(cluster)}/{urllib.parse.quote(root_job_id)}")
 
 
+@mcp.tool()
+def run_script(
+    cluster: str,
+    script: str,
+    interpreter: str = "python3",
+    timeout: int = 120,
+) -> dict:
+    """Run a script on a cluster via SSH and return its output.
+
+    Use this to analyse result files, JSONL outputs, or any data on the
+    cluster's filesystem without needing raw SSH access.
+
+    Args:
+        cluster:     Target cluster name (e.g. "ord", "dfw").
+        script:      Full source code of the script to run.
+        interpreter: "python3" (default), "bash", or "sh".
+        timeout:     Max seconds to wait (1-300, default 120).
+
+    Returns:
+        {"status": "ok", "stdout": "...", "stderr": "...", ...}
+
+    Example — analyse an eval-results JSONL:
+        run_script(
+            cluster="ord",
+            script='''
+import json
+path = "/lustre/.../output-rs0.jsonl"
+rows = [json.loads(l) for l in open(path) if l.strip()]
+correct = sum(1 for r in rows if r.get("judgement"))
+print(f"Accuracy: {correct}/{len(rows)} = {correct/len(rows)*100:.1f}%")
+''',
+        )
+    """
+    return _api_post_json(
+        f"/api/run_script/{urllib.parse.quote(cluster)}",
+        {"script": script, "interpreter": interpreter, "timeout": timeout},
+    )
+
+
 # ── mount & board tools ──────────────────────────────────────────────────────
 
 @mcp.tool()
