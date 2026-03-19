@@ -27,12 +27,16 @@ from .config import (
     TEAM_USAGE_TTL_SEC,
     reload_config, settings_response,
     get_project_color, get_project_emoji, extract_project,
+    invalidate_log_index,
 )
 from .db import (
     normalize_job_times_local, get_board_pinned,
     dismiss_job, dismiss_by_state_prefix,
     get_history, get_projects, get_db,
     _restore_dependency_fields,
+    set_custom_log_dir, get_custom_log_dir,
+    set_custom_metrics_config, get_custom_metrics_config,
+    get_jobs_in_run, get_run_id_for_job, get_run,
 )
 from .ssh import ssh_run, ssh_run_with_timeout, ssh_run_data, ssh_run_data_with_timeout
 from .mounts import (
@@ -44,6 +48,7 @@ from .logs import (
     fetch_log_tail, tail_local_file, extract_progress,
     get_job_log_files_cached,
     read_jsonl_index, read_jsonl_record,
+    extract_custom_metrics,
 )
 from .jobs import (
     refresh_all_clusters, refresh_cluster, _is_cache_fresh,
@@ -312,6 +317,190 @@ def api_clear_failed_job(cluster, job_id):
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     dismiss_job(cluster, job_id)
     return jsonify({"status": "ok"})
+
+
+def _propagate_to_run(cluster, job_id, setter_fn, value):
+    """Apply a value to all sibling jobs in the same run."""
+    run_id = get_run_id_for_job(cluster, job_id)
+    if not run_id:
+        return 0
+    jobs = get_jobs_in_run(cluster, run_id)
+    count = 0
+    for j in jobs:
+        jid = j.get("job_id", "")
+        if jid and jid != str(job_id):
+            setter_fn(cluster, jid, value)
+            invalidate_log_index(cluster, jid)
+            count += 1
+    return count
+
+
+@api.route("/api/custom_log_dir/<cluster>/<job_id>", methods=["GET", "POST"])
+def api_custom_log_dir(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    if request.method == "GET":
+        return jsonify({"status": "ok", "custom_log_dir": get_custom_log_dir(cluster, job_id)})
+    payload = request.get_json(silent=True) or {}
+    path = payload.get("path", "").strip()
+    set_custom_log_dir(cluster, job_id, path)
+    invalidate_log_index(cluster, job_id)
+    siblings = _propagate_to_run(cluster, job_id, set_custom_log_dir, path)
+    return jsonify({"status": "ok", "custom_log_dir": path, "applied_to_run": siblings})
+
+
+@api.route("/api/custom_metrics_config/<cluster>/<job_id>", methods=["GET", "POST"])
+def api_custom_metrics_config(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    if request.method == "GET":
+        raw = get_custom_metrics_config(cluster, job_id)
+        cfg = json.loads(raw) if raw else {}
+        return jsonify({"status": "ok", "config": cfg})
+    payload = request.get_json(silent=True) or {}
+    cfg = payload.get("config", {})
+    cfg_str = json.dumps(cfg) if cfg else ""
+    set_custom_metrics_config(cluster, job_id, cfg_str)
+    siblings = _propagate_to_run(cluster, job_id, set_custom_metrics_config, cfg_str)
+    return jsonify({"status": "ok", "config": cfg, "applied_to_run": siblings})
+
+
+@api.route("/api/custom_metrics_config/<cluster>/<job_id>/apply_to_run", methods=["POST"])
+def api_custom_metrics_apply_to_run(cluster, job_id):
+    """Copy this job's custom_metrics_config to all other jobs in the same run."""
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    run_id = get_run_id_for_job(cluster, job_id)
+    if not run_id:
+        return jsonify({"status": "error", "error": "Job is not part of a run"}), 400
+    src_cfg = get_custom_metrics_config(cluster, job_id)
+    if not src_cfg:
+        return jsonify({"status": "error", "error": "No metrics config on this job"}), 400
+    jobs = get_jobs_in_run(cluster, run_id)
+    count = 0
+    for j in jobs:
+        jid = j.get("job_id", "")
+        if jid and jid != str(job_id):
+            set_custom_metrics_config(cluster, jid, src_cfg)
+            count += 1
+    return jsonify({"status": "ok", "applied_to": count})
+
+
+@api.route("/api/copy_metrics_config/<cluster>/<job_id>", methods=["POST"])
+def api_copy_metrics_config(cluster, job_id):
+    """Copy custom_log_dir + metrics config from a source job to this job (and its run)."""
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    payload = request.get_json(silent=True) or {}
+    src_cluster = payload.get("src_cluster", cluster)
+    src_job_id = str(payload.get("src_job_id", "")).strip()
+    if not src_job_id:
+        return jsonify({"status": "error", "error": "No src_job_id provided"}), 400
+
+    src_log_dir = get_custom_log_dir(src_cluster, src_job_id)
+    src_metrics = get_custom_metrics_config(src_cluster, src_job_id)
+
+    if not src_log_dir and not src_metrics:
+        src_run_id = get_run_id_for_job(src_cluster, src_job_id)
+        if src_run_id:
+            for j in get_jobs_in_run(src_cluster, src_run_id):
+                jid = j.get("job_id", "")
+                if not jid:
+                    continue
+                if not src_metrics:
+                    src_metrics = get_custom_metrics_config(src_cluster, jid)
+                if not src_log_dir:
+                    src_log_dir = get_custom_log_dir(src_cluster, jid)
+                if src_log_dir and src_metrics:
+                    break
+
+    if not src_log_dir and not src_metrics:
+        return jsonify({"status": "error", "error": f"No custom config found on job {src_cluster}/{src_job_id} or its run"}), 400
+
+    copied = []
+    if src_metrics:
+        set_custom_metrics_config(cluster, job_id, src_metrics)
+        _propagate_to_run(cluster, job_id, set_custom_metrics_config, src_metrics)
+        copied.append("metrics_config")
+    if src_log_dir:
+        set_custom_log_dir(cluster, job_id, src_log_dir)
+        invalidate_log_index(cluster, job_id)
+        _propagate_to_run(cluster, job_id, set_custom_log_dir, src_log_dir)
+        copied.append("custom_log_dir")
+
+    cfg = json.loads(src_metrics) if src_metrics else {}
+    return jsonify({
+        "status": "ok",
+        "copied": copied,
+        "custom_log_dir": src_log_dir or "",
+        "config": cfg,
+    })
+
+
+@api.route("/api/custom_metrics/<cluster>/<job_id>")
+def api_custom_metrics(cluster, job_id):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    return jsonify(extract_custom_metrics(cluster, job_id))
+
+
+@api.route("/api/custom_metrics_run/<cluster>/<root_job_id>")
+def api_custom_metrics_run(cluster, root_job_id):
+    """Extract custom metrics for all jobs in a run, return per-job + aggregates."""
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+
+    run = get_run(cluster, str(root_job_id))
+    if not run:
+        return jsonify({"status": "error", "error": "Run not found"}), 404
+
+    jobs = get_jobs_in_run(cluster, run["id"])
+    if not jobs:
+        return jsonify({"status": "ok", "jobs": [], "aggregates": []})
+
+    per_job = []
+    for j in jobs:
+        jid = j.get("job_id", "")
+        result = extract_custom_metrics(cluster, jid)
+        per_job.append({
+            "job_id": jid,
+            "job_name": j.get("job_name", ""),
+            "state": j.get("state", ""),
+            "metrics": result.get("metrics", []),
+            "error": result.get("error", ""),
+        })
+
+    has_any = any(jb["metrics"] for jb in per_job)
+    aggregates = []
+    if has_any:
+        metric_names = []
+        seen = set()
+        for jb in per_job:
+            for m in jb["metrics"]:
+                if m["name"] not in seen:
+                    seen.add(m["name"])
+                    metric_names.append(m["name"])
+
+        for name in metric_names:
+            nums = []
+            for jb in per_job:
+                val = next((m["value"] for m in jb["metrics"] if m["name"] == name), None)
+                if val is not None:
+                    try:
+                        nums.append(float(val))
+                    except (ValueError, TypeError):
+                        pass
+            if nums:
+                aggregates.append({
+                    "name": name,
+                    "avg": round(sum(nums) / len(nums), 2),
+                    "min": min(nums),
+                    "max": max(nums),
+                    "sum": sum(nums),
+                    "count": len(nums),
+                })
+
+    return jsonify({"status": "ok", "jobs": per_job, "aggregates": aggregates})
 
 
 @api.route("/api/cleanup", methods=["POST"])
@@ -913,7 +1102,6 @@ def api_retry_run_meta(cluster, root_job_id):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     from .jobs import _run_meta_fetched, _capture_run_metadata
-    from .db import get_run
     key = (cluster, str(root_job_id))
     _run_meta_fetched.pop(key, None)
     run = get_run(cluster, str(root_job_id))
@@ -977,7 +1165,13 @@ def api_log_files(cluster, job_id):
         mounted = resolve_mounted_path(cluster, p, want_dir=True) if (p and cluster != "local") else ""
         source_hint = "local" if cluster == "local" else ("mount" if mounted else "ssh")
         dirs.append({**d, "source_hint": source_hint, "mounted_path": mounted})
-    resp = {"status": "ok", "files": files, "dirs": dirs, "error": result.get("error", "")}
+    resp = {
+        "status": "ok",
+        "files": files,
+        "dirs": dirs,
+        "error": result.get("error", ""),
+        "custom_log_dir": result.get("custom_log_dir", ""),
+    }
 
     if include_first and files and not files[0].get("path", "").endswith((".jsonl", ".jsonl-async")):
         first_path = files[0]["path"]
@@ -1130,7 +1324,7 @@ def api_log_full(cluster, job_id):
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     log_path = request.args.get("path", "")
     page = int(request.args.get("page", 0))
-    page_size = int(request.args.get("page_size", 500))
+    page_size = int(request.args.get("page_size", 0))  # 0 = full file
     if not log_path:
         return jsonify({"status": "error", "error": "No path provided"}), 400
 
@@ -1149,24 +1343,34 @@ def api_log_full(cluster, job_id):
         try:
             result = subprocess.run(["wc", "-l", local_path], capture_output=True, text=True, timeout=10)
             total_lines = int(result.stdout.strip().split()[0]) if result.stdout.strip() else 0
-            total_pages = max(1, -(-total_lines // page_size))
-            page = max(0, min(page, total_pages - 1))
-            start = page * page_size + 1
-            end = start + page_size - 1
-            result = subprocess.run(["sed", "-n", f"{start},{end}p", local_path], capture_output=True, text=True, timeout=15)
-            content = result.stdout or "(empty)"
+            if page_size <= 0:
+                result = subprocess.run(["cat", local_path], capture_output=True, text=True, timeout=30)
+                content = result.stdout or "(empty)"
+                page, total_pages = 0, 1
+            else:
+                total_pages = max(1, -(-total_lines // page_size))
+                page = max(0, min(page, total_pages - 1))
+                start = page * page_size + 1
+                end = start + page_size - 1
+                result = subprocess.run(["sed", "-n", f"{start},{end}p", local_path], capture_output=True, text=True, timeout=15)
+                content = result.stdout or "(empty)"
         except Exception as e:
             return jsonify({"status": "error", "error": str(e)})
     else:
         try:
             wc_out, _ = ssh_run_data_with_timeout(cluster, f"wc -l '{log_path}' 2>/dev/null", timeout_sec=10)
             total_lines = int(wc_out.strip().split()[0]) if wc_out.strip() else 0
-            total_pages = max(1, -(-total_lines // page_size))
-            page = max(0, min(page, total_pages - 1))
-            start = page * page_size + 1
-            end = start + page_size - 1
-            content, _ = ssh_run_data_with_timeout(cluster, f"sed -n '{start},{end}p' '{log_path}' 2>/dev/null", timeout_sec=15)
-            content = content or "(empty)"
+            if page_size <= 0:
+                content, _ = ssh_run_data_with_timeout(cluster, f"cat '{log_path}' 2>/dev/null", timeout_sec=30)
+                content = content or "(empty)"
+                page, total_pages = 0, 1
+            else:
+                total_pages = max(1, -(-total_lines // page_size))
+                page = max(0, min(page, total_pages - 1))
+                start = page * page_size + 1
+                end = start + page_size - 1
+                content, _ = ssh_run_data_with_timeout(cluster, f"sed -n '{start},{end}p' '{log_path}' 2>/dev/null", timeout_sec=15)
+                content = content or "(empty)"
         except Exception as e:
             return jsonify({"status": "error", "error": str(e)})
 

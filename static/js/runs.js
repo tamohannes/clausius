@@ -153,7 +153,90 @@ function _renderRunBody(run, cluster) {
     </div>`;
   }
 
+  html += '<div id="run-custom-metrics"></div>';
+
   body.innerHTML = html;
+  _loadRunCustomMetrics(cluster, run.root_job_id);
+}
+
+async function _loadRunCustomMetrics(cluster, rootJobId) {
+  const el = document.getElementById('run-custom-metrics');
+  if (!el) return;
+  try {
+    const res = await fetch(`/api/custom_metrics_run/${encodeURIComponent(cluster)}/${encodeURIComponent(rootJobId)}`);
+    const d = await res.json();
+    if (d.status !== 'ok' || (!d.aggregates?.length && !d.jobs?.some(j => j.metrics?.length))) return;
+
+    let html = '';
+
+    if (d.aggregates && d.aggregates.length) {
+      const aggRows = d.aggregates.map(a =>
+        `<tr>
+          <td style="font-weight:500">${_escHtml(a.name)}</td>
+          <td>${a.avg}</td>
+          <td>${a.min}</td>
+          <td>${a.max}</td>
+          <td>${a.sum}</td>
+          <td>${a.count}</td>
+        </tr>`).join('');
+      html += `<div class="run-section" style="margin-top:14px">
+        <div class="run-section-head" onclick="toggleRunSection('run-metrics-agg')">
+          <span>Custom Metrics (aggregated)</span>
+          <span class="run-section-chevron" id="run-metrics-agg-chevron">▼</span>
+        </div>
+        <div class="run-section-body" id="run-metrics-agg">
+          <table class="run-jobs-table">
+            <thead><tr><th>Metric</th><th>Avg</th><th>Min</th><th>Max</th><th>Sum</th><th>Count</th></tr></thead>
+            <tbody>${aggRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    }
+
+    const jobsWithMetrics = (d.jobs || []).filter(j => j.metrics && j.metrics.length);
+    if (jobsWithMetrics.length) {
+      const metricNames = [];
+      const seen = new Set();
+      for (const j of jobsWithMetrics) {
+        for (const m of j.metrics) {
+          if (!seen.has(m.name)) { seen.add(m.name); metricNames.push(m.name); }
+        }
+      }
+      const headerCols = metricNames.map(n => `<th>${_escHtml(n)}</th>`).join('');
+      const bodyRows = jobsWithMetrics.map(j => {
+        const valMap = {};
+        for (const m of j.metrics) valMap[m.name] = m.value;
+        const cols = metricNames.map(n => {
+          const v = valMap[n];
+          return `<td>${v !== null && v !== undefined ? _escHtml(String(v)) : '—'}</td>`;
+        }).join('');
+        const st = (j.state || '').toUpperCase();
+        const cls = stateClass ? stateClass(st) : '';
+        return `<tr>
+          <td style="color:var(--muted)">${_escHtml(j.job_id)}</td>
+          <td style="font-weight:500">${_escHtml(j.job_name || '—')}</td>
+          <td><span class="state-chip ${cls}">${_escHtml(j.state || '—')}</span></td>
+          ${cols}
+        </tr>`;
+      }).join('');
+      html += `<div class="run-section" style="margin-top:10px">
+        <div class="run-section-head" onclick="toggleRunSection('run-metrics-jobs')">
+          <span>Custom Metrics (per job)</span>
+          <span class="run-section-chevron collapsed" id="run-metrics-jobs-chevron">▼</span>
+        </div>
+        <div class="run-section-body hidden" id="run-metrics-jobs">
+          <table class="run-jobs-table">
+            <thead><tr><th>ID</th><th>Name</th><th>State</th>${headerCols}</tr></thead>
+            <tbody>${bodyRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    }
+
+    el.innerHTML = html;
+  } catch (e) {
+    console.error('Failed to load run custom metrics', e);
+  }
 }
 
 function _renderToggleSection(id, title, contentHtml, collapsed) {
