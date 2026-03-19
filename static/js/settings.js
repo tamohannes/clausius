@@ -4,41 +4,100 @@ async function openStats(cluster, jobId, jobName) {
   document.getElementById('stats-title').textContent = jobName || `job ${jobId}`;
   document.getElementById('stats-sub').textContent = `${cluster} · ${jobId}`;
   document.getElementById('stats-body').innerHTML = '<div class="log-loading">Loading stats…</div>';
+  let slurmHtml = '';
   try {
     const res = await fetch(`/api/stats/${cluster}/${jobId}`);
     const d = await res.json();
-    if (d.status !== 'ok') {
-      document.getElementById('stats-body').innerHTML = `<div class="log-loading" style="color:var(--red)">` +
-        `${d.error || 'Could not load stats.'}</div>`;
+    if (d.status === 'ok') {
+      const gRows = (d.gpus || []).map(g => `<tr><td>${g.index}</td><td>${g.name}</td><td>${g.util}</td><td>${g.mem}</td></tr>`).join('');
+      const gpuTable = gRows
+        ? `<div class="gpu-table"><table><thead><tr><th>GPU</th><th>Model</th><th>Util</th><th>Memory</th></tr></thead><tbody>${gRows}</tbody></table></div>`
+        : `<div class="stats-kv" style="margin-top:12px">
+            <div class="stats-k">GPU Metrics</div>
+            <div class="stats-v">${d.gpu_summary || 'Not available (job may be pending/finished, or direct probe is restricted).'}</div>
+            ${d.gpu_probe_error ? `<div class="stats-v" style="color:var(--muted);font-size:10px;margin-top:4px">probe detail: ${d.gpu_probe_error}</div>` : ''}
+          </div>`;
+      slurmHtml = `
+        <div class="stats-grid">
+          <div class="stats-kv"><div class="stats-k">State</div><div class="stats-v">${d.state || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Elapsed</div><div class="stats-v">${d.elapsed || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Nodes</div><div class="stats-v">${d.nodes || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Node List</div><div class="stats-v">${d.node_list || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Allocated CPU</div><div class="stats-v">${d.cpus || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Allocated GPU</div><div class="stats-v">${d.gres || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Ave GPU util (TRES)</div><div class="stats-v">${d.gpuutil_ave || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Ave GPU mem (TRES)</div><div class="stats-v">${d.gpumem_ave || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Ave CPU (sstat)</div><div class="stats-v">${d.ave_cpu || '—'}</div></div>
+          <div class="stats-kv"><div class="stats-k">Ave RSS / Max RSS</div><div class="stats-v">${d.ave_rss || '—'} / ${d.max_rss || '—'}</div></div>
+        </div>
+        ${gpuTable}`;
+    } else {
+      slurmHtml = `<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:6px 0">${d.error || 'Slurm stats not available.'}</div>`;
+    }
+  } catch (e) {
+    slurmHtml = `<div style="font-family:var(--mono);font-size:11px;color:var(--muted);padding:6px 0">Could not load Slurm stats.</div>`;
+  }
+  document.getElementById('stats-body').innerHTML = slurmHtml + '<div id="custom-metrics-section"></div>';
+  _loadCustomMetricsForStats(cluster, jobId);
+}
+
+let _statsCluster = null, _statsJobId = null;
+
+async function _loadCustomMetricsForStats(cluster, jobId) {
+  _statsCluster = cluster;
+  _statsJobId = jobId;
+  const el = document.getElementById('custom-metrics-section');
+  if (!el) return;
+
+  const refreshBtn = `<button onclick="_loadCustomMetricsForStats('${cluster}','${jobId}')" style="border:none;background:none;cursor:pointer;color:var(--muted);font-size:13px;padding:0 4px;vertical-align:middle" title="refresh">↻</button>`;
+
+  el.innerHTML = `<div style="margin-top:14px;padding-top:10px;border-top:1px solid var(--border)">
+    <div style="font-family:var(--mono);font-size:11px;font-weight:600;margin-bottom:6px">Custom Metrics ${refreshBtn}
+      <span id="custom-metrics-loading" style="font-weight:400;color:var(--muted);font-size:10px;margin-left:6px">loading…</span>
+    </div>
+    <div id="custom-metrics-grid"></div></div>`;
+
+  try {
+    const res = await fetch(`/api/custom_metrics/${cluster}/${jobId}`);
+    const d = await res.json();
+    const loadingEl = document.getElementById('custom-metrics-loading');
+    if (loadingEl) loadingEl.remove();
+    const grid = document.getElementById('custom-metrics-grid');
+    if (!grid) return;
+
+    if (d.unconfigured) {
+      grid.innerHTML = `<div class="stats-kv">
+        <div class="stats-v" style="color:var(--muted);font-style:italic">
+          Not configured. Set regex extractors in the log viewer modal.</div></div>`;
       return;
     }
-    const gRows = (d.gpus || []).map(g => `<tr><td>${g.index}</td><td>${g.name}</td><td>${g.util}</td><td>${g.mem}</td></tr>`).join('');
-    const gpuTable = gRows
-      ? `<div class="gpu-table"><table><thead><tr><th>GPU</th><th>Model</th><th>Util</th><th>Memory</th></tr></thead><tbody>${gRows}</tbody></table></div>`
-      : `<div class="stats-kv" style="margin-top:12px">
-          <div class="stats-k">GPU Metrics</div>
-          <div class="stats-v">${d.gpu_summary || 'Not available (job may be pending/finished, or direct probe is restricted).'}</div>
-          ${d.gpu_probe_error ? `<div class="stats-v" style="color:var(--muted);font-size:10px;margin-top:4px">probe detail: ${d.gpu_probe_error}</div>` : ''}
-        </div>`;
-    document.getElementById('stats-body').innerHTML = `
-      <div class="stats-grid">
-        <div class="stats-kv"><div class="stats-k">State</div><div class="stats-v">${d.state || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Elapsed</div><div class="stats-v">${d.elapsed || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Nodes</div><div class="stats-v">${d.nodes || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Node List</div><div class="stats-v">${d.node_list || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Allocated CPU</div><div class="stats-v">${d.cpus || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Allocated GPU</div><div class="stats-v">${d.gres || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Ave GPU util (TRES)</div><div class="stats-v">${d.gpuutil_ave || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Ave GPU mem (TRES)</div><div class="stats-v">${d.gpumem_ave || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Ave CPU (sstat)</div><div class="stats-v">${d.ave_cpu || '—'}</div></div>
-        <div class="stats-kv"><div class="stats-k">Ave RSS / Max RSS</div><div class="stats-v">${d.ave_rss || '—'} / ${d.max_rss || '—'}</div></div>
-      </div>
-      ${gpuTable}
-    `;
+    if (d.status !== 'ok') {
+      grid.innerHTML = `<div class="stats-kv">
+        <div class="stats-v" style="color:var(--red)">${d.error || 'Error'}</div></div>`;
+      return;
+    }
+    if (!d.metrics || !d.metrics.length) {
+      grid.innerHTML = `<div class="stats-kv">
+        <div class="stats-v" style="color:var(--muted)">No extractors defined.</div></div>`;
+      return;
+    }
+    grid.className = 'stats-grid';
+    grid.innerHTML = d.metrics.map(m =>
+      `<div class="stats-kv">
+        <div class="stats-k">${_statsEsc(m.name)}</div>
+        <div class="stats-v">${m.value !== null && m.value !== undefined ? _statsEsc(String(m.value)) : '—'}
+          <span style="color:var(--muted);font-size:9px;margin-left:6px">(${m.match_count} matches)</span>
+        </div>
+      </div>`).join('');
   } catch (e) {
-    document.getElementById('stats-body').innerHTML = `<div class="log-loading" style="color:var(--red)">Failed to load stats.</div>`;
+    const grid = document.getElementById('custom-metrics-grid');
+    if (grid) grid.innerHTML = '';
+    const loadingEl = document.getElementById('custom-metrics-loading');
+    if (loadingEl) loadingEl.textContent = 'failed';
   }
 }
+
+function _statsEsc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
 function closeStats(e) {
   if (e.target === document.getElementById('stats-overlay')) closeStatsDirect();

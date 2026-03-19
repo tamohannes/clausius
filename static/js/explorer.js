@@ -50,13 +50,14 @@ function setExpView(mode) {
   }
 }
 
-async function _loadExplorerPage(page) {
+async function _loadExplorerPage(page, pageSize) {
   const el = document.getElementById('exp-content');
   el.className = 'explorer-content';
   el.innerHTML = '<div class="log-loading">Loading…</div>';
 
+  const ps = pageSize !== undefined ? pageSize : 0;
   try {
-    const res = await fetch(`/api/log_full/${_expCluster}/${_expJobId}?path=${encodeURIComponent(_expPath)}&page=${page}&page_size=500`);
+    const res = await fetch(`/api/log_full/${_expCluster}/${_expJobId}?path=${encodeURIComponent(_expPath)}&page=${page}&page_size=${ps}`);
     const d = await res.json();
     if (d.status !== 'ok') {
       el.innerHTML = `<div class="log-loading" style="color:var(--red)">${d.error || 'Failed'}</div>`;
@@ -113,8 +114,7 @@ function _renderExpRaw(content) {
   const el = document.getElementById('exp-content');
   el.className = 'explorer-content';
   const lines = content.split('\n');
-  const startLine = _expPage * 500 + 1;
-  const gutter = lines.map((_, i) => `<div>${startLine + i}</div>`).join('');
+  const gutter = lines.map((_, i) => `<div>${i + 1}</div>`).join('');
   const code = escapeHtml(content);
   el.innerHTML = `<div class="ide-raw"><div class="ide-gutter">${gutter}</div><div class="ide-code">${code}</div></div>`;
   _renderExpPagination();

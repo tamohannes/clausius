@@ -132,6 +132,9 @@ SSH_IDLE_TTL_SEC = 180
 
 _warm_lock = threading.Lock()
 _log_index_cache = {}
+
+def invalidate_log_index(cluster, job_id):
+    _log_index_cache.pop((cluster, str(job_id)), None)
 _log_content_cache = {}
 _stats_cache = {}
 _dir_list_cache = {}

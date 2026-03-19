@@ -1,5 +1,6 @@
 """Database operations for job history."""
 
+import os
 import sqlite3
 import subprocess
 from datetime import datetime, timedelta
@@ -88,6 +89,7 @@ def normalize_job_times_local(job):
 
 
 def get_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     return con
@@ -120,7 +122,9 @@ def init_db():
                          ("started", "TEXT"),
                          ("dependency", "TEXT DEFAULT ''"),
                          ("project", "TEXT DEFAULT ''"),
-                         ("run_id", "INTEGER DEFAULT NULL")]:
+                         ("run_id", "INTEGER DEFAULT NULL"),
+                         ("custom_log_dir", "TEXT DEFAULT ''"),
+                         ("custom_metrics_config", "TEXT DEFAULT ''")]:
         try:
             con.execute(f"ALTER TABLE job_history ADD COLUMN {col} {default}")
         except Exception:
@@ -325,6 +329,68 @@ def dismiss_by_state_prefix(cluster, prefixes):
     con.execute(f"UPDATE job_history SET board_visible=0 WHERE cluster=? AND ({where})", args)
     con.commit()
     con.close()
+
+
+def set_custom_log_dir(cluster, job_id, path):
+    con = get_db()
+    con.execute(
+        "UPDATE job_history SET custom_log_dir=? WHERE cluster=? AND job_id=?",
+        (path.strip(), cluster, str(job_id)),
+    )
+    con.commit()
+    con.close()
+
+
+def get_custom_log_dir(cluster, job_id):
+    con = get_db()
+    row = con.execute(
+        "SELECT custom_log_dir FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, str(job_id)),
+    ).fetchone()
+    con.close()
+    return (row["custom_log_dir"] or "") if row else ""
+
+
+def set_custom_metrics_config(cluster, job_id, config_json):
+    con = get_db()
+    con.execute(
+        "UPDATE job_history SET custom_metrics_config=? WHERE cluster=? AND job_id=?",
+        (config_json, cluster, str(job_id)),
+    )
+    con.commit()
+    con.close()
+
+
+def get_custom_metrics_config(cluster, job_id):
+    con = get_db()
+    row = con.execute(
+        "SELECT custom_metrics_config FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, str(job_id)),
+    ).fetchone()
+    con.close()
+    return (row["custom_metrics_config"] or "") if row else ""
+
+
+def get_jobs_in_run(cluster, run_id):
+    """Return all jobs belonging to a given run_id."""
+    con = get_db()
+    rows = con.execute(
+        "SELECT * FROM job_history WHERE cluster=? AND run_id=?",
+        (cluster, int(run_id)),
+    ).fetchall()
+    con.close()
+    return [dict(r) for r in rows]
+
+
+def get_run_id_for_job(cluster, job_id):
+    """Return the run_id for a given job, or None."""
+    con = get_db()
+    row = con.execute(
+        "SELECT run_id FROM job_history WHERE cluster=? AND job_id=?",
+        (cluster, str(job_id)),
+    ).fetchone()
+    con.close()
+    return row["run_id"] if row and row["run_id"] else None
 
 
 def get_history(cluster=None, limit=200, project=None):
