@@ -184,6 +184,7 @@ function renderCard(name, data) {
 
   const statusClass = isErr ? 'error' : 'ok';
   const jobCountText = isErr ? 'unreachable' : `${jobs.length} job${jobs.length !== 1 ? 's' : ''}`;
+  const utilBar = utilBarHtml(name);
 
   const updated = data.updated ? new Date(data.updated).toLocaleTimeString() : '';
   const mount = data.mount || { mounted: false };
@@ -195,6 +196,8 @@ function renderCard(name, data) {
     body = `<div class="no-jobs">no active jobs</div>`;
   } else {
     const groupEntries = groupJobsByDependency(jobs);
+    const allGroupKeys = groupEntries.map(([gk]) => gk);
+    const gkHL = computeNameHighlight(allGroupKeys);
 
     const rows = groupEntries.map(([gk, groupJobs], gidx) => {
       const _proj = groupJobs[0]?.project || '';
@@ -205,9 +208,10 @@ function renderCard(name, data) {
       const rootJobId = rootJob.jobid;
       const safeGk = gk.replace(/'/g, "\\'");
       const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+      const highlightedGk = highlightJobName(gk, gkHL.prefix, gkHL.suffix);
       const runBadge = name !== 'local'
-        ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="View run details">${gk}</span>`
-        : gk;
+        ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${name}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
+        : highlightedGk;
 
       // Compute dependency depth for indentation.
       const idSet = new Set(groupJobs.map(j => j.jobid));
@@ -228,6 +232,9 @@ function renderCard(name, data) {
       }
       const visibleCount = groupJobs.length - backupSet.size;
       const groupLabel = `<span>${runBadge}${_projBadge} <span class="group-count">· ${visibleCount} job${visibleCount !== 1 ? 's' : ''}</span></span>`;
+
+      const jobNames = groupJobs.map(j => j.name || '');
+      const jnHL = computeNameHighlight(jobNames);
 
       const groupRows = ordered.map(j => {
       const gpuStr = parseGpus(j.nodes, j.gres);
@@ -278,7 +285,7 @@ function renderCard(name, data) {
         const cls = isExpanded ? 'backups-btn expanded' : 'backups-btn';
         backupBtn = ` <button class="${cls}" data-backups-toggle="${j.jobid}" onclick="event.stopPropagation();toggleBackups('${j.jobid}')">${n} backup${n !== 1 ? 's' : ''}</button>`;
       }
-      const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span>${backupBtn}`;
+      const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${backupBtn}`;
 
       const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
       const _pct = resolveProgress(name, j.jobid, j.progress, j.state);
@@ -340,6 +347,7 @@ function renderCard(name, data) {
         <span class="card-name">${name}</span>
         <span class="badge">${info.gpu_type}</span>
         ${hasRunning ? '<span class="badge badge-accent">● active</span>' : ''}
+        ${utilBar}${quotaBadgesHtml(name)}
       </div>
       <div class="card-meta">
         <span class="status-indicator ${statusClass}"></span>
@@ -553,6 +561,15 @@ async function fetchAll() {
   const grid = document.getElementById('grid');
   if (!grid.children.length) _showLoadingSkeleton();
 
+  fetchClusterUtilization().then(() => {
+    if (_clusterUtil && Object.keys(allData).length) _renderAll();
+  });
+  if (!Object.keys(_storageQuota).length) {
+    fetchStorageQuotas().then(() => {
+      if (Object.keys(allData).length) _renderAll();
+    });
+  }
+
   // 1) Try cached data — only render if it's reasonably fresh.
   let usedCache = false;
   try {
@@ -607,6 +624,20 @@ function _fillMissing() {
 function _renderAll() {
   renderGrid(allData);
   updateSummary(allData);
+  _attachPendingTooltips();
+}
+
+function _attachPendingTooltips() {
+  if (!_clusterUtil) return;
+  document.querySelectorAll('.pending-util-chip').forEach(chip => {
+    if (chip._utilBound) return;
+    const card = chip.closest('.card');
+    if (!card) return;
+    const clusterName = (card.id || '').replace('card-', '');
+    if (!clusterName) return;
+    attachPendingTooltip(chip, clusterName);
+    chip._utilBound = true;
+  });
 }
 
 async function refreshCluster(name) {

@@ -162,6 +162,16 @@ function _renderProjLive() {
     byCluster[j._cluster].push(j);
   }
 
+  // Pre-collect all live group keys for name highlighting
+  const _liveGroupEntries = [];
+  for (const [cluster, jobs] of Object.entries(byCluster)) {
+    if (!jobs.some(j => !j._pinned)) continue;
+    for (const [gk, groupJobs] of groupJobsByDependency(jobs)) {
+      if (groupJobs.some(j => !j._pinned)) _liveGroupEntries.push(gk);
+    }
+  }
+  const _liveGkHL = computeNameHighlight(_liveGroupEntries);
+
   let html = '<div class="proj-live-label">● live jobs</div>';
   for (const [cluster, jobs] of Object.entries(byCluster)) {
     // Only render clusters that have at least one non-pinned job.
@@ -180,11 +190,15 @@ function _renderProjLive() {
       const safeGk = gk.replace(/'/g, "\\'");
       const _projColor = groupJobs[0]?.project_color || '';
       const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
+      const highlightedGk = highlightJobName(gk, _liveGkHL.prefix, _liveGkHL.suffix);
       const runBadge = cluster !== 'local'
-        ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeGk}')" title="View run details">${gk}</span>`
-        : gk;
+        ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
+        : highlightedGk;
       const groupLabel = `${runBadge} ${cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
       let rows = `<tr class="group-head-row"><td colspan="11">${groupLabel}</td></tr>`;
+
+      const _liveJobNames = groupJobs.map(j => j.name).filter(Boolean);
+      const _liveJnHL = computeNameHighlight(_liveJobNames);
 
       for (const j of groupJobs) {
         const st = (j.state || '').toUpperCase();
@@ -216,7 +230,7 @@ function _renderProjLive() {
         const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
         rows += `<tr class="${isPinned ? 'pinned-row' : ''} ${pinKind}" style="${_rowBg}">
           <td class="dim">${j.jobid}</td>
-          <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name}</span></td>
+          <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _liveJnHL.prefix, _liveJnHL.suffix) : '—'}</span></td>
           <td>${stateChip(j.state, _pct, j.reason, j.exit_code, j.crash_detected, j.est_start)} ${depBadge}</td>
           <td>${logBtn} ${statsBtn}</td>
           <td class="dim">${startTime}</td>
@@ -315,6 +329,7 @@ function _renderProjPage() {
 
   const start = _projPage * PROJ_GROUPS_PER_PAGE;
   const pageGroups = _projGroups.slice(start, start + PROJ_GROUPS_PER_PAGE);
+  const _projGkHL = computeNameHighlight(pageGroups.map(g => g.label));
 
   let html = '';
   pageGroups.forEach((g, gidx) => {
@@ -324,7 +339,8 @@ function _renderProjPage() {
     const safeLabel = g.label.replace(/'/g, "\\'");
     const _projColor = groupJobs[0]?.project_color || '';
     const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
-    const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="View run details">${g.label}</span>`;
+    const highlightedLabel = highlightJobName(g.label, _projGkHL.prefix, _projGkHL.suffix);
+    const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
     const groupLabel = `${runBadge} ${g.cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
     if (groupJobs.length > 1) {
       html += `<tr class="group-head-row"><td colspan="11" style="padding:4px 16px">${groupLabel}</td></tr>`;
@@ -333,6 +349,8 @@ function _renderProjPage() {
     const byId = {};
     for (const j of groupJobs) byId[j.jobid] = j;
     const depthMemo = {};
+    const _projJobNames = groupJobs.map(j => j.name).filter(Boolean);
+    const _projJnHL = computeNameHighlight(_projJobNames);
 
     groupJobs.forEach(j => {
       const st = (j.state || '').toUpperCase();
@@ -355,7 +373,7 @@ function _renderProjPage() {
       html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${_rowBg}">
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
-        <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>
+        <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _projJnHL.prefix, _projJnHL.suffix) : '—'}</span></td>
         <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>
         <td>${logBtn} ${statsBtn}</td>
         <td class="dim">${started}</td>

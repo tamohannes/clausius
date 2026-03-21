@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, jsonify, request, render_template, make_response
 
 from .config import (
-    CLUSTERS, DEFAULT_USER, TERMINAL_STATES, RESULT_DIR_NAMES,
+    CLUSTERS, DEFAULT_USER, TEAM_NAME, TERMINAL_STATES, RESULT_DIR_NAMES,
     _CONFIG, _cache_lock, _cache,
     _cache_get, _cache_set,
     _log_content_cache, _dir_list_cache, _progress_cache, _crash_cache, _est_start_cache,
@@ -83,7 +83,7 @@ def _rebuild_cross_deps(jobs):
 
 @api.route("/")
 def index():
-    resp = make_response(render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER))
+    resp = make_response(render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER, team=TEAM_NAME))
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     return resp
@@ -817,6 +817,10 @@ def api_settings_post():
         merged["clusters"] = patch["clusters"]
     if "projects" in patch:
         merged["projects"] = patch["projects"]
+    if "team" in patch:
+        merged["team"] = patch["team"]
+    if "ppps" in patch:
+        merged["ppps"] = patch["ppps"]
 
     try:
         reload_config(merged)
@@ -827,6 +831,57 @@ def api_settings_post():
 
 
 # ─── Logbook routes ──────────────────────────────────────────────────────────
+
+from .cluster_dashboard import get_cluster_utilization, DASHBOARD_BASE_URL
+from .storage_quota import fetch_storage_quota
+
+
+@api.route("/api/user_avatar")
+def api_user_avatar():
+    """Proxy the user's avatar image from the Science dashboard."""
+    import urllib.request as _ur
+    user = request.args.get("user", DEFAULT_USER)
+    url = f"{DASHBOARD_BASE_URL}/images/{user}.png"
+    try:
+        with _ur.urlopen(url, timeout=5) as resp:
+            data = resp.read()
+            ct = resp.headers.get("Content-Type", "image/png")
+            r = make_response(data)
+            r.headers["Content-Type"] = ct
+            r.headers["Cache-Control"] = "public, max-age=86400"
+            return r
+    except Exception:
+        url_jpg = f"{DASHBOARD_BASE_URL}/images/{user}.jpeg"
+        try:
+            with _ur.urlopen(url_jpg, timeout=5) as resp:
+                data = resp.read()
+                ct = resp.headers.get("Content-Type", "image/jpeg")
+                r = make_response(data)
+                r.headers["Content-Type"] = ct
+                r.headers["Cache-Control"] = "public, max-age=86400"
+                return r
+        except Exception:
+            return "", 404
+
+
+@api.route("/api/storage_quota/<cluster>")
+def api_storage_quota(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    data = fetch_storage_quota(cluster)
+    if data.get("status") == "error":
+        return jsonify(data), 400
+    return jsonify(data)
+
+
+@api.route("/api/cluster_utilization")
+def api_cluster_utilization():
+    force = request.args.get("force", "0") == "1"
+    data = get_cluster_utilization(force=force)
+    if not data:
+        return jsonify({"status": "error", "error": "External dashboard unreachable"}), 502
+    return jsonify({"status": "ok", **data})
+
 
 from .logbooks import (
     list_logbooks as _list_logbooks,

@@ -287,6 +287,51 @@ print(f"Accuracy: {correct}/{len(rows)} = {correct/len(rows)*100:.1f}%")
     )
 
 
+# ── cluster availability ─────────────────────────────────────────────────────
+
+@mcp.tool()
+def get_storage_quota(cluster: str) -> dict:
+    """Get Lustre storage quota for a cluster: your personal usage and team project quotas.
+
+    Returns:
+      user_quota — your disk usage vs quota (space + inodes)
+      project_quotas — PPP quotas for llmservice_nemo_reasoning and
+                       llmservice_nemo_robustness (space + inodes with % used)
+
+    Works on clusters with Lustre (dfw, eos, iad, ord, nrt).
+    Returns an error for clusters using NFS (lax) or without lfs.
+
+    Use this alongside get_cluster_availability() to make submission
+    recommendations that consider both compute AND storage constraints.
+    If a project quota is near its limit (>90% space or inodes), the
+    cluster may reject new jobs that write large outputs.
+    """
+    return _api_get(f"/api/storage_quota/{urllib.parse.quote(cluster)}")
+
+
+@mcp.tool()
+def get_cluster_availability() -> dict:
+    """Get real-time cluster utilization from the Science dashboard.
+
+    Returns per-cluster data: total nodes, running/pending nodes,
+    active users with their node counts, and team GPU allocations.
+    Use this to recommend which cluster will start jobs fastest.
+
+    Key fields per cluster:
+      total_nodes      — total nodes in use on the cluster
+      running_nodes    — nodes currently running jobs (all users)
+      pending_nodes    — nodes queued pending (all users)
+      gpus_per_node    — GPUs per node (usually 8, 4 for hsg)
+      users            — list of {user, running, pending, total, team}
+      team_alloc_gpus  — team -> allocated GPU count
+      status           — "ok" or "error"
+
+    The returned "collected_at" timestamp shows when the dashboard
+    last polled the clusters (typically every ~15 minutes).
+    """
+    return _api_get("/api/cluster_utilization")
+
+
 # ── mount & board tools ──────────────────────────────────────────────────────
 
 @mcp.tool()

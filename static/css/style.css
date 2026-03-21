@@ -296,6 +296,9 @@ td.dim { color: var(--muted); }
 td.bold { font-weight: 500; }
 .name-cpu { color: var(--muted); font-weight: 400; }
 
+.jn-dim { opacity: 0.35; font-weight: 400; }
+.jn-hi { font-weight: 600; }
+
 .est-inline {
   font-weight: 400; opacity: 0.85; font-size: 9px;
 }
@@ -1148,6 +1151,11 @@ tr.group-bg-3:hover td { background: #eef5ff; }
   background: var(--surface);
 }
 .nav-user-btn:hover { background: var(--accent-bg); }
+.nav-user-img {
+  width: 26px; height: 26px; border-radius: 50%;
+  object-fit: cover; flex-shrink: 0;
+  border: 1.5px solid var(--border);
+}
 .nav-user-avatar {
   width: 26px; height: 26px; border-radius: 50%;
   background: var(--accent); color: #fff;
@@ -1284,3 +1292,106 @@ tr.group-bg-3:hover td { background: #eef5ff; }
   flex: 1; padding: 16px 16px 16px 20px;
   overflow-x: auto; white-space: pre;
 }
+
+/* ── Cluster utilization bar (card header) ── */
+.util-bar-wrap {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+}
+.util-bar {
+  width: 64px; height: 6px; border-radius: 3px;
+  background: var(--border); overflow: hidden;
+  position: relative;
+}
+.util-bar-fill {
+  height: 100%; border-radius: 3px;
+  transition: width 0.4s ease, background 0.3s;
+}
+.util-bar-fill.low    { background: var(--green); }
+.util-bar-fill.medium { background: var(--amber); }
+.util-bar-fill.high   { background: var(--red); }
+
+/* ── Pending tooltip ── */
+.cluster-tooltip {
+  position: fixed; z-index: 800;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.10);
+  padding: 10px 12px;
+  font-family: var(--mono); font-size: 11px;
+  pointer-events: none; opacity: 0;
+  transition: opacity 0.12s;
+  min-width: 200px; max-width: 300px;
+  line-height: 1.5;
+}
+.cluster-tooltip.visible { opacity: 1; }
+.tt-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.tt-head-name {
+  font-size: 11px; font-weight: 700; color: var(--text);
+}
+.tt-head-status {
+  font-size: 9px; font-weight: 600; padding: 1px 6px;
+  border-radius: 4px;
+}
+.tt-head-status.busy   { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-bd); }
+.tt-head-status.loaded  { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); }
+.tt-head-status.normal { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd); }
+.tt-util-bar {
+  height: 5px; border-radius: 3px; background: var(--border);
+  margin-bottom: 8px; overflow: hidden;
+}
+.tt-util-bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+.tt-util-bar-fill.low    { background: var(--green); }
+.tt-util-bar-fill.medium { background: var(--amber); }
+.tt-util-bar-fill.high   { background: var(--red); }
+.tt-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 2px 0; font-size: 10px;
+}
+.tt-label { color: var(--muted); }
+.tt-val { font-weight: 600; color: var(--text); }
+.tt-val.green { color: var(--green); }
+.tt-val.amber { color: var(--amber); }
+.tt-val.red   { color: var(--red); }
+.tt-sep { height: 1px; background: var(--border); margin: 6px 0; }
+.tt-quota-row {
+  display: flex; align-items: center; gap: 4px;
+  padding: 1px 0; font-size: 10px;
+}
+.tt-quota-name { color: var(--muted); flex: 1; }
+.tt-quota-bar {
+  width: 40px; height: 4px; border-radius: 2px;
+  background: var(--border); overflow: hidden; flex-shrink: 0;
+}
+.tt-quota-bar-fill { height: 100%; border-radius: 2px; }
+.tt-quota-pct { min-width: 28px; text-align: right; font-weight: 600; font-size: 9px; }
+.tt-footer {
+  margin-top: 6px; font-size: 9px; color: var(--muted);
+  text-align: right;
+}
+
+/* ── Quota pills (card header) ── */
+.quota-pill {
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  padding: 1px 6px; border-radius: 4px;
+  margin-left: 4px; white-space: nowrap;
+  letter-spacing: 0.2px;
+}
+.quota-pill.ok {
+  background: var(--green-bg); color: var(--green);
+  border: 1px solid var(--green-bd);
+}
+.quota-pill.warn {
+  background: var(--amber-bg); color: var(--amber);
+  border: 1px solid var(--amber-bd);
+}
+.quota-pill.crit {
+  background: var(--red-bg); color: var(--red);
+  border: 1px solid var(--red-bd);
+}
+
+/* Make pending chip show pointer on hover when utilization data is available */
+.state-chip.s-PENDING.has-util { cursor: default; }

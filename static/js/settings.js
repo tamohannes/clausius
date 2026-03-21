@@ -252,10 +252,76 @@ async function loadSettingsPanel() {
     document.getElementById('set-proc-include').value = inc.join(', ');
     document.getElementById('set-proc-exclude').value = exc.join(', ');
 
+    document.getElementById('set-team').value = cfg.team || '';
+    renderPppEditor(cfg.ppps || {});
+
     renderClusterEditor(cfg.clusters || {});
     renderProjectEditor(cfg.projects || {});
   } catch (e) {
     toast('Failed to load settings', 'error');
+  }
+}
+
+function renderPppEditor(ppps) {
+  const el = document.getElementById('ppp-editor');
+  el.innerHTML = Object.entries(ppps).map(([name, pid]) => `
+    <div class="cluster-edit-card" style="margin-bottom:4px">
+      <div class="ce-head">
+        <span class="ce-name" style="font-size:10px">${name}</span>
+        <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+      </div>
+      <div class="ce-fields">
+        <div class="ce-field"><span>PPP Name</span><input data-f="ppp-name" value="${name}" style="font-size:10px"></div>
+        <div class="ce-field"><span>Project ID</span><input data-f="ppp-id" type="number" value="${pid}"></div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function addPppRow() {
+  const el = document.getElementById('ppp-editor');
+  const div = document.createElement('div');
+  div.className = 'cluster-edit-card';
+  div.style.marginBottom = '4px';
+  div.innerHTML = `
+    <div class="ce-head">
+      <span class="ce-name" style="font-size:10px">new PPP</span>
+      <button class="ce-remove" onclick="this.closest('.cluster-edit-card').remove()" title="remove">✕</button>
+    </div>
+    <div class="ce-fields">
+      <div class="ce-field"><span>PPP Name</span><input data-f="ppp-name" value="" placeholder="llmservice_..." style="font-size:10px"></div>
+      <div class="ce-field"><span>Project ID</span><input data-f="ppp-id" type="number" value="" placeholder="10101"></div>
+    </div>
+  `;
+  el.appendChild(div);
+}
+
+async function saveProfile() {
+  const team = document.getElementById('set-team').value.trim();
+  const cards = document.querySelectorAll('#ppp-editor .cluster-edit-card');
+  const ppps = {};
+  for (const card of cards) {
+    const name = (card.querySelector('[data-f="ppp-name"]').value || '').trim();
+    const pid = parseInt(card.querySelector('[data-f="ppp-id"]').value) || 0;
+    if (name && pid > 0) ppps[name] = pid;
+  }
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team, ppps }),
+    });
+    const d = await res.json();
+    if (d.status === 'ok') {
+      toast('Profile saved');
+      _storageQuota = {};
+      fetchStorageQuotas().then(() => { if (Object.keys(allData).length) _renderAll(); });
+      fetchClusterUtilization().then(() => { if (Object.keys(allData).length) _renderAll(); });
+    } else {
+      toast(d.error || 'Save failed', 'error');
+    }
+  } catch (e) {
+    toast('Save failed', 'error');
   }
 }
 

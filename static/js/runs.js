@@ -101,20 +101,26 @@ function _renderRunBody(run, cluster) {
       <div class="run-section-body" id="run-jobs-sec">
         <table class="run-jobs-table">
           <thead><tr><th>ID</th><th>Name</th><th>State</th><th>Start</th><th>End</th><th>Elapsed</th></tr></thead>
-          <tbody>${jobs.map(j => {
-            const st = (j.state || '').toUpperCase();
-            const cls = stateClass(st);
-            const start = fmtTime(j.started_local || j.started || j.submitted);
-            const end = fmtTime(j.ended_local || j.ended_at);
-            return `<tr>
-              <td style="color:var(--muted)">${j.job_id || j.jobid || '—'}</td>
-              <td style="font-weight:500">${j.job_name || j.name || '—'}</td>
-              <td><span class="state-chip ${cls}">${j.state || '—'}</span></td>
-              <td style="color:var(--muted)">${start}</td>
-              <td style="color:var(--muted)">${end}</td>
-              <td style="color:var(--muted)">${j.elapsed || '—'}</td>
-            </tr>`;
-          }).join('')}</tbody>
+          <tbody>${(() => {
+            const _runNames = jobs.map(j => j.job_name || j.name).filter(Boolean);
+            const _runHL = computeNameHighlight(_runNames);
+            return jobs.map(j => {
+              const st = (j.state || '').toUpperCase();
+              const cls = stateClass(st);
+              const start = fmtTime(j.started_local || j.started || j.submitted);
+              const end = fmtTime(j.ended_local || j.ended_at);
+              const rawName = j.job_name || j.name || '';
+              const dispName = rawName ? highlightJobName(rawName, _runHL.prefix, _runHL.suffix) : '—';
+              return `<tr>
+                <td style="color:var(--muted)">${j.job_id || j.jobid || '—'}</td>
+                <td style="font-weight:500" title="${rawName}">${dispName}</td>
+                <td><span class="state-chip ${cls}">${j.state || '—'}</span></td>
+                <td style="color:var(--muted)">${start}</td>
+                <td style="color:var(--muted)">${end}</td>
+                <td style="color:var(--muted)">${j.elapsed || '—'}</td>
+              </tr>`;
+            }).join('');
+          })()}</tbody>
         </table>
       </div>
     </div>`;

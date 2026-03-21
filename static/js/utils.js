@@ -1,4 +1,6 @@
 const CLUSTERS = JSON.parse(document.getElementById('cluster-data').textContent || '{}');
+const USERNAME = (document.getElementById('username-data')?.textContent || '').trim();
+const TEAM = (document.getElementById('team-data')?.textContent || '').trim();
 let allData = {};
 let historyData = [];
 let countdown = 20;
@@ -8,6 +10,10 @@ let currentTab = 'live';
 let _isResizingTree = false;
 let _isResizingNav = false;
 let navCollapsed = false;
+
+/* ── Cluster utilization data (from external dashboard) ── */
+let _clusterUtil = null;
+let _clusterUtilFetching = false;
 const sectionCollapsed = {
   local: false,
   idle: false,
@@ -94,14 +100,20 @@ function stateChip(s, progress, reason, exitCode, crashDetected, estStart) {
   if (progress != null && st === 'RUNNING') {
     return `<span class="state-chip ${cls}">${s}${progressRing(progress)}<span class="progress-pct">${progress}%</span></span>`;
   }
+  const hasUtil = st === 'PENDING' && _clusterUtil;
+  const utilCls = hasUtil ? ' has-util' : '';
   if (st === 'PENDING' && estStart) {
     const d = new Date(estStart.replace('T', ' '));
     if (!isNaN(d)) {
       const now = new Date();
       const diffH = Math.round((d - now) / 3600000);
       const when = diffH >= 24 ? `~${Math.round(diffH / 24)}d` : diffH > 0 ? `~${diffH}h` : 'soon';
-      return `<span class="state-chip ${cls}" title="Est. start: ${d.toLocaleString()}">PENDING <span class="est-inline">(${when})</span></span>`;
+      return `<span class="state-chip ${cls}${utilCls} pending-util-chip" title="Est. start: ${d.toLocaleString()}">PENDING <span class="est-inline">(${when})</span></span>`;
     }
+  }
+  if (st === 'PENDING') {
+    const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${reason}"` : '';
+    return `<span class="state-chip ${cls}${utilCls} pending-util-chip"${tip}>PENDING</span>`;
   }
   const tip = reason && reason !== 'None' && reason !== 'Priority' ? ` title="${reason}"` : '';
   let extra = '';
@@ -445,6 +457,232 @@ function contrastTextColor(hex) {
   const b = parseInt(hex.slice(5, 7), 16);
   const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
   return lum > 0.55 ? '#000' : '#fff';
+}
+
+/* ── Job name highlighting (dim common prefix/suffix, bold unique part) ── */
+
+function computeNameHighlight(names) {
+  const unique = [...new Set(names)];
+  if (unique.length <= 1) return { prefix: '', suffix: '' };
+
+  let prefix = unique[0];
+  for (let i = 1; i < unique.length; i++) {
+    while (prefix && !unique[i].startsWith(prefix)) {
+      prefix = prefix.slice(0, -1);
+    }
+  }
+
+  const rems = unique.map(n => n.slice(prefix.length));
+  let suffix = rems[0];
+  for (let i = 1; i < rems.length; i++) {
+    while (suffix && !rems[i].endsWith(suffix)) {
+      suffix = suffix.slice(1);
+    }
+  }
+
+  for (const n of unique) {
+    if (n.length - prefix.length - suffix.length <= 0) {
+      return { prefix: '', suffix: '' };
+    }
+  }
+
+  if (prefix.length + suffix.length < 3) return { prefix: '', suffix: '' };
+
+  return { prefix, suffix };
+}
+
+function highlightJobName(name, prefix, suffix) {
+  if (!prefix && !suffix) return name;
+  const end = suffix ? name.length - suffix.length : name.length;
+  const mid = name.slice(prefix.length, end);
+  let html = '';
+  if (prefix) html += '<span class="jn-dim">' + prefix + '</span>';
+  html += '<span class="jn-hi">' + mid + '</span>';
+  if (suffix) html += '<span class="jn-dim">' + suffix + '</span>';
+  return html;
+}
+
+/* ── Cluster Utilization & Quota ────────────────────────── */
+
+let _storageQuota = {};
+
+async function fetchClusterUtilization() {
+  if (_clusterUtilFetching) return;
+  _clusterUtilFetching = true;
+  try {
+    const res = await fetch('/api/cluster_utilization');
+    const data = await res.json();
+    if (data.status === 'ok') {
+      _clusterUtil = data;
+    }
+  } catch (_) {}
+  _clusterUtilFetching = false;
+}
+
+async function fetchStorageQuotas() {
+  const clusters = Object.keys(CLUSTERS).filter(c => c !== 'local');
+  const promises = clusters.map(async c => {
+    try {
+      const res = await fetch(`/api/storage_quota/${c}`);
+      const data = await res.json();
+      if (data.status === 'ok') _storageQuota[c] = data;
+    } catch (_) {}
+  });
+  await Promise.allSettled(promises);
+}
+
+function getClusterUtil(clusterName) {
+  if (!_clusterUtil || !_clusterUtil.clusters) return null;
+  return _clusterUtil.clusters[clusterName] || null;
+}
+
+function _teamStats(u) {
+  const gpuPer = u.gpus_per_node || 8;
+  const alloc = TEAM ? ((u.team_alloc_gpus || {})[TEAM] || 0) : 0;
+  const members = TEAM ? u.users.filter(x => x.team === TEAM) : [];
+  const runGpus = members.reduce((s, x) => s + x.running, 0) * gpuPer;
+  const pendGpus = members.reduce((s, x) => s + x.pending, 0) * gpuPer;
+  const pct = alloc > 0 ? Math.round(runGpus / alloc * 100) : 0;
+  return { alloc, runGpus, pendGpus, pct, gpuPer };
+}
+
+function utilBarHtml(clusterName) {
+  const u = getClusterUtil(clusterName);
+  if (!u) return '';
+  const t = _teamStats(u);
+  if (!t.alloc) return '';
+  const level = t.pct >= 90 ? 'high' : t.pct >= 60 ? 'medium' : 'low';
+  return `<span class="util-bar-wrap" title="Science team: ${t.runGpus} / ${t.alloc} GPUs allocated">
+    <span class="util-bar"><span class="util-bar-fill ${level}" style="width:${Math.min(t.pct, 100)}%"></span></span>
+    <span>${t.pct}%</span>
+  </span>`;
+}
+
+function quotaBadgesHtml(clusterName) {
+  const q = _storageQuota[clusterName];
+  if (!q || !q.project_quotas) return '';
+  const badges = [];
+  for (const [name, pq] of Object.entries(q.project_quotas)) {
+    const short = name.replace('llmservice_nemo_', '');
+    const spacePct = pq.space_used_pct || 0;
+    const inodePct = pq.files_used_pct || 0;
+    const worst = Math.max(spacePct, inodePct);
+    const level = worst >= 95 ? 'crit' : worst >= 85 ? 'warn' : 'ok';
+    const detail = `${short}: ${pq.space_used_human} / ${pq.space_quota_human} (${spacePct}% space, ${inodePct}% inodes)`;
+    badges.push(`<span class="quota-pill ${level}" title="${detail}">${short} ${Math.round(worst)}%</span>`);
+  }
+  return badges.join('');
+}
+
+/* ── Tooltip for pending jobs ── */
+const _tooltip = (() => {
+  const el = document.createElement('div');
+  el.className = 'cluster-tooltip';
+  document.body.appendChild(el);
+
+  let _hideTimer = null;
+
+  function _pctColor(pct) { return pct >= 90 ? 'red' : pct >= 60 ? 'amber' : 'green'; }
+  function _barLevel(pct) { return pct >= 90 ? 'high' : pct >= 60 ? 'medium' : 'low'; }
+  function _statusLabel(pct) {
+    if (pct >= 90) return '<span class="tt-head-status busy">saturated</span>';
+    if (pct >= 60) return '<span class="tt-head-status loaded">busy</span>';
+    return '<span class="tt-head-status normal">available</span>';
+  }
+
+  function show(anchorEl, clusterName) {
+    const u = getClusterUtil(clusterName);
+    if (!u) return;
+    clearTimeout(_hideTimer);
+
+    const t = _teamStats(u);
+    const gpuPer = t.gpuPer;
+
+    // Cluster fullness — total_nodes = nodes currently occupied cluster-wide
+    const allBusy = u.total_nodes > 0 && u.pending_nodes > 0;
+    const clusterFull = u.total_nodes > 0 && (u.pending_nodes >= u.total_nodes * 0.3);
+
+    // Header status: combine team quota position + cluster pressure
+    let headerStatus = '';
+    if (t.alloc > 0) {
+      if (clusterFull && t.pct < 100) {
+        headerStatus = '<span class="tt-head-status busy">cluster full</span>';
+      } else if (t.pct >= 100) {
+        headerStatus = '<span class="tt-head-status busy">over quota</span>';
+      } else if (t.pct >= 70) {
+        headerStatus = '<span class="tt-head-status loaded">near quota</span>';
+      } else {
+        headerStatus = '<span class="tt-head-status normal">has priority</span>';
+      }
+    }
+
+    let html = `<div class="tt-head"><span class="tt-head-name">${clusterName}</span>${headerStatus}</div>`;
+
+    // Team allocation — primary info
+    if (t.alloc > 0) {
+      html += `<div class="tt-util-bar"><div class="tt-util-bar-fill ${_barLevel(t.pct)}" style="width:${Math.min(t.pct, 100)}%"></div></div>`;
+      html += `<div class="tt-row"><span class="tt-label">Team GPUs</span><span class="tt-val ${_pctColor(t.pct)}">${t.runGpus} / ${t.alloc} allocated</span></div>`;
+      if (t.pendGpus > 0) {
+        html += `<div class="tt-row"><span class="tt-label">Team pending</span><span class="tt-val amber">${t.pendGpus} GPUs</span></div>`;
+      }
+    }
+
+    // Cluster-wide context: show nodes occupied + queue depth
+    html += `<div class="tt-sep"></div>`;
+    html += `<div class="tt-row"><span class="tt-label">Nodes occupied</span><span class="tt-val">${u.total_nodes}</span></div>`;
+    if (u.pending_nodes > 0) {
+      html += `<div class="tt-row"><span class="tt-label">Nodes queued</span><span class="tt-val amber">${u.pending_nodes}</span></div>`;
+    }
+
+    // Storage quota health
+    const sq = _storageQuota[clusterName];
+    if (sq && sq.project_quotas && Object.keys(sq.project_quotas).length) {
+      html += `<div class="tt-sep"></div>`;
+      for (const [pname, pq] of Object.entries(sq.project_quotas)) {
+        const short = pname.replace('llmservice_nemo_', '');
+        const sp = pq.space_used_pct || 0;
+        const ip = pq.files_used_pct || 0;
+        const worst = Math.max(sp, ip);
+        const cls = _pctColor(worst);
+        const barCls = _barLevel(worst);
+        html += `<div class="tt-quota-row">`;
+        html += `<span class="tt-quota-name">${short}</span>`;
+        html += `<span class="tt-quota-bar"><span class="tt-util-bar-fill ${barCls}" style="width:${Math.min(worst, 100)}%"></span></span>`;
+        html += `<span class="tt-quota-pct ${cls}">${Math.round(worst)}%</span>`;
+        html += `</div>`;
+      }
+    }
+
+    el.innerHTML = html;
+
+    const rect = anchorEl.getBoundingClientRect();
+    const ttW = el.offsetWidth || 260;
+    let left = rect.left + rect.width / 2 - ttW / 2;
+    let top = rect.bottom + 6;
+    if (left < 8) left = 8;
+    if (left + ttW > window.innerWidth - 8) left = window.innerWidth - ttW - 8;
+    if (top + el.offsetHeight > window.innerHeight - 8) {
+      top = rect.top - 6;
+      el.style.transform = 'translateY(-100%)';
+    } else {
+      el.style.transform = '';
+    }
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+    el.classList.add('visible');
+  }
+
+  function hide() {
+    _hideTimer = setTimeout(() => { el.classList.remove('visible'); }, 100);
+  }
+
+  return { show, hide, el };
+})();
+
+function attachPendingTooltip(chipEl, clusterName) {
+  if (!chipEl) return;
+  chipEl.addEventListener('mouseenter', () => _tooltip.show(chipEl, clusterName));
+  chipEl.addEventListener('mouseleave', () => _tooltip.hide());
 }
 
 /* ── Tab Visibility Guard ───────────────────────────────── */

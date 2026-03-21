@@ -29,6 +29,8 @@ else:
     )
 
 APP_PORT = _CONFIG.get("port", 7272)
+TEAM_NAME = _CONFIG.get("team", "")
+PPPS = _CONFIG.get("ppps", {})
 LOG_SEARCH_BASES = _CONFIG.get("log_search_bases", [])
 NEMO_RUN_BASES = _CONFIG.get("nemo_run_bases", [])
 MOUNT_LUSTRE_PREFIXES = _CONFIG.get("mount_lustre_prefixes", [])
@@ -128,7 +130,7 @@ _last_polled = {}
 _ssh_pool_lock = threading.Lock()
 _ssh_pool = {}
 _ssh_cluster_locks = {}
-SSH_IDLE_TTL_SEC = 180
+SSH_IDLE_TTL_SEC = 300
 
 _warm_lock = threading.Lock()
 _log_index_cache = {}
@@ -267,7 +269,7 @@ def _cache_set(store, key, value):
 
 def reload_config(new_cfg):
     """Hot-reload mutable globals from a new config dict. Writes to disk first."""
-    global _CONFIG, SSH_TIMEOUT, CACHE_FRESH_SEC
+    global _CONFIG, SSH_TIMEOUT, CACHE_FRESH_SEC, TEAM_NAME, PPPS
     global LOG_SEARCH_BASES, NEMO_RUN_BASES, MOUNT_LUSTRE_PREFIXES
     global LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE
 
@@ -284,6 +286,8 @@ def reload_config(new_cfg):
     LOCAL_PROC_EXCLUDE = pf.get("exclude", [])
     SSH_TIMEOUT = new_cfg.get("ssh_timeout", 8)
     CACHE_FRESH_SEC = new_cfg.get("cache_fresh_sec", 30)
+    TEAM_NAME = new_cfg.get("team", "")
+    PPPS = new_cfg.get("ppps", {})
 
     from .ssh import close_cluster_client
 
@@ -322,4 +326,6 @@ def settings_response():
     cfg["ssh_timeout"] = SSH_TIMEOUT
     cfg["cache_fresh_sec"] = CACHE_FRESH_SEC
     cfg["projects"] = dict(PROJECTS)
+    cfg["team"] = TEAM_NAME
+    cfg["ppps"] = dict(PPPS)
     return cfg

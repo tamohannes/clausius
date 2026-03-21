@@ -36,7 +36,8 @@
       <div class="nav-project-grid" id="nav-project-grid"></div>
     </div>
     <div class="nav-user-btn" onclick="openSettingsModal()">
-      <span class="nav-user-avatar">{{ username[0] | upper }}</span>
+      <img class="nav-user-img" src="/api/user_avatar" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display=''">
+      <span class="nav-user-avatar" style="display:none">{{ username[0] | upper }}</span>
       <span class="nav-user-name">{{ username }}</span>
       <span class="nav-user-hint">settings</span>
     </div>
@@ -236,7 +237,8 @@
     </div>
     <div class="settings-layout">
       <div class="settings-nav">
-        <div class="settings-nav-item active" data-section="sec-refresh" onclick="showSettingsSection(this)">Refresh</div>
+        <div class="settings-nav-item active" data-section="sec-profile" onclick="showSettingsSection(this)">Profile</div>
+        <div class="settings-nav-item" data-section="sec-refresh" onclick="showSettingsSection(this)">Refresh</div>
         <div class="settings-nav-item" data-section="sec-mounts" onclick="showSettingsSection(this)">Mounts</div>
         <div class="settings-nav-item" data-section="sec-clusters" onclick="showSettingsSection(this)">Clusters</div>
         <div class="settings-nav-item" data-section="sec-advanced" onclick="showSettingsSection(this)">Advanced</div>
@@ -244,7 +246,27 @@
         <div class="settings-nav-item" data-section="sec-filters" onclick="showSettingsSection(this)">Process Filters</div>
       </div>
       <div class="settings-content">
-        <div class="settings-section active" id="sec-refresh">
+        <div class="settings-section active" id="sec-profile">
+          <div class="settings-sub" style="display:flex;align-items:center;gap:14px;padding:12px">
+            <img id="set-avatar" src="/api/user_avatar" alt="" style="width:52px;height:52px;border-radius:50%;border:2px solid var(--border);object-fit:cover;background:var(--bg)">
+            <div>
+              <div style="font-family:var(--mono);font-size:13px;font-weight:600">{{ username }}</div>
+              <div style="font-family:var(--mono);font-size:10px;color:var(--muted);margin-top:2px">cluster / monitor</div>
+            </div>
+          </div>
+          <div class="settings-sub-label">Team</div>
+          <div class="settings-sub">
+            <label class="settings-row"><span>Team name</span><input type="text" id="set-team" value="" placeholder="science" style="width:140px"></label>
+            <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px">Your team in the Science dashboard — used for GPU allocation tracking</div>
+          </div>
+          <div class="settings-sub-label" style="margin-top:10px">PPPs (Project Quotas)</div>
+          <div class="settings-sub">
+            <div id="ppp-editor"></div>
+            <button class="btn" style="margin-top:6px;width:100%" onclick="addPppRow()">+ add PPP</button>
+          </div>
+          <button class="btn" style="margin-top:10px;width:100%" onclick="saveProfile()">save profile</button>
+        </div>
+        <div class="settings-section" id="sec-refresh">
           <div class="settings-sub-label">Refresh Behavior</div>
           <label class="settings-row"><span>Auto-refresh live table</span><input type="checkbox" id="set-autorefresh" onchange="saveLocalSettings()"></label>
           <label class="settings-row"><span>Interval (sec)</span><input type="number" id="set-refresh-interval" min="5" max="600" value="30" style="width:60px" onchange="saveLocalSettings()"></label>
@@ -300,6 +322,8 @@
 <div class="toasts" id="toasts"></div>
 
 <script id="cluster-data" type="application/json">{{ clusters | tojson }}</script>
+<script id="username-data" type="text/plain">{{ username }}</script>
+<script id="team-data" type="text/plain">{{ team }}</script>
 <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
 <script src="{{ url_for('static', filename='js/jobs.js') }}"></script>
 <script src="{{ url_for('static', filename='js/history.js') }}"></script>

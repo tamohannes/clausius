@@ -91,6 +91,7 @@ function _renderHistPage() {
 
   const start = histPage * HIST_GROUPS_PER_PAGE;
   const pageGroups = histGroups.slice(start, start + HIST_GROUPS_PER_PAGE);
+  const _histGkHL = computeNameHighlight(pageGroups.map(g => g.label));
 
   let html = '';
   pageGroups.forEach((g, gidx) => {
@@ -103,7 +104,8 @@ function _renderHistPage() {
     const rootJobId = rootJob.jobid;
     const safeLabel = g.label.replace(/'/g, "\\'");
     const runBadgeStyle = _projColor ? ` style="background:${_projColor};border-color:${_projColor};color:${contrastTextColor(_projColor)}"` : '';
-    const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="View run details">${g.label}</span>`;
+    const highlightedLabel = highlightJobName(g.label, _histGkHL.prefix, _histGkHL.suffix);
+    const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
     const groupLabel = `${runBadge}${_projBadge} ${g.cluster} <span class="group-count">· ${groupJobs.length} run${groupJobs.length !== 1 ? 's' : ''}</span>`;
 
     if (groupJobs.length > 1) {
@@ -114,6 +116,8 @@ function _renderHistPage() {
     const byId = {};
     for (const j of groupJobs) byId[j.jobid] = j;
     const depthMemo = {};
+    const _histJobNames = groupJobs.map(j => j.name).filter(Boolean);
+    const _histJnHL = computeNameHighlight(_histJobNames);
 
     groupJobs.forEach(j => {
       const st = (j.state || '').toUpperCase();
@@ -136,7 +140,7 @@ function _renderHistPage() {
       html += `<tr class="hist-compact ${pinKind}${bgClass}" style="${_rowBg}">
         <td><span class="badge">${g.cluster}</span></td>
         <td class="dim">${j.jobid}</td>
-        <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name || '—'}</span></td>
+        <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _histJnHL.prefix, _histJnHL.suffix) : '—'}</span></td>
         <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>
         <td>${logBtn} ${statsBtn}</td>
         <td class="dim">${started}</td>
