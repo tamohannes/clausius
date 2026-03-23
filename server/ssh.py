@@ -19,6 +19,8 @@ from .config import (
 
 log = logging.getLogger(__name__)
 
+_thread_ctx = threading.local()
+
 
 def _ssh_client(cluster_name):
     cfg = CLUSTERS[cluster_name]
@@ -134,7 +136,50 @@ def ssh_run_with_timeout(cluster_name, command, timeout_sec=20):
     return _ssh_exec(cluster_name, command, timeout_sec)
 
 
+def ssh_run_standalone(cluster_name, command, timeout_sec=20):
+    """Run a command over a *fresh* SSH connection without acquiring the
+    per-cluster lock.  Use this for background/non-critical work so it
+    never blocks the main polling path."""
+    return _ssh_exec_standalone(cluster_name, command, timeout_sec)
+
+
+def _ssh_exec_standalone(cluster_name, command, timeout_sec):
+    client = _ssh_client(cluster_name)
+    try:
+        stdin_ch, stdout, stderr = client.exec_command(
+            "bash", timeout=timeout_sec,
+        )
+        try:
+            stdin_ch.write(command + "\nexit\n")
+            stdin_ch.flush()
+            stdin_ch.channel.shutdown_write()
+            out = stdout.read().decode().strip()
+            err = stderr.read().decode().strip()
+        finally:
+            try:
+                stdout.channel.close()
+            except Exception:
+                pass
+        return out, err
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def enable_standalone_ssh():
+    """Mark the current thread to use standalone (non-pooled) SSH.
+
+    Call at the start of any background/worker thread so all subsequent
+    ssh_run / ssh_run_with_timeout calls bypass the per-cluster lock.
+    """
+    _thread_ctx.standalone = True
+
+
 def _ssh_exec(cluster_name, command, timeout_sec):
+    if getattr(_thread_ctx, "standalone", False):
+        return _ssh_exec_standalone(cluster_name, command, timeout_sec)
     lock = _get_cluster_lock(cluster_name)
     for attempt in (1, 2):
         with lock:

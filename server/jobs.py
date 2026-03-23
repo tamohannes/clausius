@@ -20,7 +20,7 @@ from .config import (
     EST_START_TTL_SEC, PREFETCH_MIN_GAP_SEC,
     extract_project,
 )
-from .ssh import ssh_run, ssh_run_with_timeout
+from .ssh import ssh_run, ssh_run_with_timeout, ssh_run_standalone, enable_standalone_ssh
 from .db import (
     upsert_job, get_db, get_board_pinned,
     upsert_run, update_run_meta, update_run_times, associate_jobs_to_run, get_run,
@@ -332,6 +332,7 @@ def _detect_and_register_runs(cluster, jobs):
 
 def _capture_run_metadata(cluster, root_job_id, run_id):
     """SSH to cluster and capture batch script, scontrol output, and conda state."""
+    enable_standalone_ssh()
     script = f"""#!/bin/sh
 echo "===SCONTROL_START==="
 scontrol show job {root_job_id} 2>/dev/null
@@ -344,7 +345,7 @@ conda env export 2>/dev/null || conda list 2>/dev/null || pip freeze 2>/dev/null
 echo "===CONDA_END==="
 """
     try:
-        out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=25)
+        out, _ = ssh_run_standalone(cluster, script, timeout_sec=25)
     except Exception:
         _run_meta_fetched.pop((cluster, root_job_id), None)
         return
@@ -549,7 +550,9 @@ def poll_cluster(name):
         uncaptured = [jid for jid in running_ids
                       if (name, jid) not in _stdout_captured]
         if uncaptured:
-            _capture_stdout_paths(name, uncaptured)
+            threading.Thread(
+                target=_capture_stdout_paths, args=(name, uncaptured), daemon=True,
+            ).start()
 
         all_jobs_for_runs = list(data.get("jobs", []))
         pinned = get_board_pinned(name)
@@ -577,9 +580,9 @@ def poll_cluster(name):
 def _capture_stdout_paths(cluster_name, job_ids):
     """Bulk-capture StdOut paths via scontrol for running jobs, store in DB.
 
-    Called during poll so that short-lived jobs have their log path recorded
-    before scontrol purges them.
+    Runs in a background thread so it never blocks the main polling path.
     """
+    enable_standalone_ssh()
     if not job_ids:
         return
     ids_str = " ".join(str(j) for j in job_ids)
@@ -588,7 +591,7 @@ def _capture_stdout_paths(cluster_name, job_ids):
   [ -n "$STDOUT" ] && [ "$STDOUT" != "(null)" ] && echo "LOGPATH:$JOB:$STDOUT"
 done"""
     try:
-        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=15)
+        out, _ = ssh_run_standalone(cluster_name, script, timeout_sec=15)
     except Exception:
         return
 
@@ -740,6 +743,7 @@ def schedule_prefetch(cluster, job_id):
 
 
 def _prefetch_job_data(cluster, job_id):
+    enable_standalone_ssh()
     try:
         log_result = get_job_log_files(cluster, job_id)
         _cache_set(_log_index_cache, (cluster, job_id), log_result)
@@ -765,12 +769,13 @@ def _prefetch_job_data(cluster, job_id):
 
 def fetch_est_start_bulk(cluster, pending_job_ids):
     """Fetch estimated start times for pending jobs via squeue --start."""
+    enable_standalone_ssh()
     if not pending_job_ids or cluster == "local":
         return
     ids = [str(j) for j in pending_job_ids if j]
     ids_csv = ",".join(ids)
     try:
-        out, _ = ssh_run_with_timeout(
+        out, _ = ssh_run_standalone(
             cluster,
             f'squeue -h -j "{ids_csv}" --start -o "%i|%S" 2>/dev/null',
             timeout_sec=10,
@@ -787,6 +792,7 @@ def fetch_est_start_bulk(cluster, pending_job_ids):
 
 
 def prefetch_cluster_bulk(cluster, job_ids):
+    enable_standalone_ssh()
     if cluster == "local" or not job_ids:
         return
     ids = [str(j) for j in job_ids if j]
@@ -797,7 +803,7 @@ def prefetch_cluster_bulk(cluster, job_ids):
 squeue -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
 """
     try:
-        out, _ = ssh_run_with_timeout(cluster, script, timeout_sec=15)
+        out, _ = ssh_run_standalone(cluster, script, timeout_sec=15)
     except Exception:
         out = ""
 

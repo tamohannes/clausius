@@ -589,7 +589,9 @@ async function fetchAll() {
 
   // 2) Refresh each cluster in parallel; update cards as responses arrive.
   grid.classList.add('grid-loading');
+  const barTimeout = setTimeout(() => grid.classList.remove('grid-loading'), 3000);
   await _refreshAllClusters();
+  clearTimeout(barTimeout);
   grid.classList.remove('grid-loading');
 
   // 3) Prefetch logs for visible running jobs, then async-fetch progress.
