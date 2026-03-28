@@ -1,7 +1,8 @@
 """Crash detection and log-line classification.
 
 Scans log content for fatal error patterns while filtering out known
-non-fatal messages (sandbox restarts, transient communication errors, etc.).
+non-fatal messages (sandbox restarts, transient communication errors,
+tool call errors from agent code execution, etc.).
 """
 
 import re
@@ -34,11 +35,23 @@ FALSE_POSITIVE_PATTERNS = [
     re.compile(r'Sandbox communication error', re.I),
 ]
 
+# Tool call response lines embed tracebacks from agent code execution
+# (e.g. stateful_python_code_exec) that are NOT real crashes — the model
+# hit a code error in one tool call and kept going.
+_TOOL_CALL_LINE = re.compile(r'Sending tool calls:', re.I)
+_TOOL_CALL_SOURCE = re.compile(r'tool_call\.py:\d+', re.I)
+_LOG_TIMESTAMP = re.compile(
+    r'^\d{4}-\d{2}-\d{2}\s|'          # 2026-03-28 14:05:00
+    r'^\[\d{2}/\d{2}/\d{2}\s|'        # [03/28/26 14:05:00]
+    r'^Remaining generations:'         # tqdm progress line
+)
+
 # Client-side counterpart: substrings (lowercase) that make a log line
 # "benign" — the UI should show them as warnings, not errors.
 BENIGN_LINE_SUBSTRINGS = [
     'sandbox state restoration failed',
     'sandbox communication error',
+    'sending tool calls:',
 ]
 
 # ── Tail size used by detect_crash ────────────────────────────────────────────
@@ -56,11 +69,39 @@ def _strip_false_positives(text):
     )
 
 
+def _strip_tool_call_blocks(text):
+    """Remove tool-call response blocks that may embed tracebacks from agent code execution.
+
+    Tool call responses appear in two log formats:
+      1. Single-line: "2026-03-28 14:05:00 INFO  Sending tool calls: [{...}]"
+      2. Rich console: multi-line block starting with "Sending tool calls:" or
+         "tool_call.py:NNN", followed by indented continuation lines.
+
+    Both can contain embedded tracebacks (e.g. ValueError from the model's
+    code execution) that are soft fails, not real crashes.
+    """
+    lines = text.split('\n')
+    result = []
+    in_block = False
+    for line in lines:
+        if _TOOL_CALL_LINE.search(line) or _TOOL_CALL_SOURCE.search(line):
+            in_block = True
+            continue
+        if in_block:
+            stripped = line.lstrip()
+            if not stripped or not _LOG_TIMESTAMP.match(stripped):
+                continue
+            in_block = False
+        result.append(line)
+    return '\n'.join(result)
+
+
 def detect_crash(content):
     """Return a short crash reason if error patterns found in log tail, else None."""
     if not content:
         return None
     tail = _strip_false_positives(content[-TAIL_BYTES:])
+    tail = _strip_tool_call_blocks(tail)
     for pat in CRASH_PATTERNS:
         m = pat.search(tail)
         if m:
@@ -84,11 +125,13 @@ SOFT_FAIL_INDICATORS = [
 
 
 def detect_soft_failure(content):
-    """Return a short reason if the failure is a no-op (work already done), else None.
+    """Return a short reason if the failure is a no-op or tool-call-only error, else None.
 
-    Soft failures occur when retry/continuation jobs find all work already
-    completed and exit non-zero because downstream steps (e.g. evaluation)
-    have no output files to process.
+    Soft failures occur when:
+      1. Retry/continuation jobs find all work already completed and exit
+         non-zero because downstream steps have no output files to process.
+      2. The only crash patterns in the log are inside tool call responses
+         (agent code execution errors, not real infrastructure crashes).
     """
     if not content:
         return None
@@ -96,7 +139,36 @@ def detect_soft_failure(content):
         m = pat.search(content)
         if m:
             return m.group(0)[:80]
+
+    tool_call_reason = _detect_tool_call_soft_fail(content)
+    if tool_call_reason:
+        return tool_call_reason
     return None
+
+
+def _detect_tool_call_soft_fail(content):
+    """Return a reason if crashes exist only inside tool call response blocks.
+
+    Compares crash detection with and without tool-call stripping. If the
+    raw content triggers a crash pattern but the stripped version does not,
+    the errors are tool-call-only — a soft fail.
+    """
+    tail = _strip_false_positives(content[-TAIL_BYTES:])
+    raw_crash = None
+    for pat in CRASH_PATTERNS:
+        m = pat.search(tail)
+        if m:
+            raw_crash = m.group(0)[:80]
+            break
+    if not raw_crash:
+        return None
+
+    stripped = _strip_tool_call_blocks(tail)
+    for pat in CRASH_PATTERNS:
+        if pat.search(stripped):
+            return None
+
+    return f"tool call errors ({raw_crash})"
 
 
 def is_benign_line(line_lower):

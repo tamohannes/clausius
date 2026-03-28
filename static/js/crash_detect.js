@@ -8,6 +8,7 @@
 const BENIGN_LINE_PATTERNS = [
   'sandbox state restoration failed',
   'sandbox communication error',
+  'sending tool calls:',
 ];
 
 function isBenignLogLine(lineLower) {
