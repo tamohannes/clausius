@@ -405,6 +405,9 @@
               <option value="first">first N</option><option value="last">last N</option><option value="all">all records</option>
             </select>
           </label>
+          <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px;margin-top:8px"><span>Background run suffixes (comma-separated)</span><input type="text" id="set-bg-suffixes" style="width:100%" placeholder="_server, _proxy, ..."></label>
+          <div style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:2px">Runs ending with these suffixes appear translucent on the dashboard</div>
+          <div style="display:flex;justify-content:flex-end;margin-top:8px"><button class="btn" onclick="saveBgSuffixes()">save suffixes</button></div>
           <div class="settings-sub-label" style="margin-top:16px">Local Process Filters</div>
           <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Include (comma-separated)</span><input type="text" id="set-proc-include" style="width:100%" placeholder="my-framework, my_framework, ..."></label>
           <label class="settings-row" style="flex-direction:column;align-items:flex-start;gap:3px"><span>Exclude (comma-separated)</span><input type="text" id="set-proc-exclude" style="width:100%" placeholder="cursor, jupyter, ..."></label>

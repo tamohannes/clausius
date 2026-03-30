@@ -868,6 +868,37 @@ async function saveProcessFilters() {
   }
 }
 
+// ── Background run suffixes ──
+const BG_SUFFIXES_DEFAULT = ['_server'];
+let bgSuffixes = [...BG_SUFFIXES_DEFAULT];
+
+function loadBgSuffixes() {
+  try {
+    const raw = localStorage.getItem('ncluster.bgSuffixes');
+    if (raw) bgSuffixes = JSON.parse(raw);
+    else bgSuffixes = [...BG_SUFFIXES_DEFAULT];
+  } catch (_) {
+    bgSuffixes = [...BG_SUFFIXES_DEFAULT];
+  }
+  const el = document.getElementById('set-bg-suffixes');
+  if (el) el.value = bgSuffixes.join(', ');
+}
+
+function saveBgSuffixes() {
+  const el = document.getElementById('set-bg-suffixes');
+  if (!el) return;
+  bgSuffixes = el.value.split(',').map(s => s.trim()).filter(Boolean);
+  try { localStorage.setItem('ncluster.bgSuffixes', JSON.stringify(bgSuffixes)); } catch (_) {}
+  if (typeof _renderAll === 'function' && Object.keys(allData || {}).length) _renderAll();
+  toast('Background suffixes saved');
+}
+
+function isBackgroundRun(name) {
+  if (!name || !bgSuffixes.length) return false;
+  const lower = name.toLowerCase();
+  return bgSuffixes.some(s => lower.endsWith(s.toLowerCase()));
+}
+
 // ── Local settings (localStorage) ──
 let jsonlLimit = 50;
 let jsonlMode = 'first';
@@ -926,6 +957,7 @@ setupSidebarResizer();
 applySidebarState();
 loadLocalSettings();
 applyLocalSettings();
+loadBgSuffixes();
 fetchAll();
 loadProjectButtons();
 

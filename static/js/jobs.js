@@ -412,7 +412,9 @@ function renderCard(name, data) {
       const backupHidden = isBackup && !_expandedBackups.has(backupParentId);
       const backupRowCls = isBackup ? 'backup-child-row' : '';
 
-      const rowClass = `${isPinned ? 'pinned-row' : ''} ${pinKind} ${backupRowCls} group-bg-${gidx % 4}`;
+      const _isBg = typeof isBackgroundRun === 'function' && isBackgroundRun(gk);
+      const bgChildCls = _isBg ? ' bg-run-child' : '';
+      const rowClass = `${isPinned ? 'pinned-row' : ''} ${pinKind} ${backupRowCls}${bgChildCls} group-bg-${gidx % 4}`;
       const groupHidden = !isGroupExpanded;
       const rowDisplay = (groupHidden || backupHidden) ? 'display:none;' : '';
       const parentAttr = isBackup ? ` data-backup-parent="${backupParentId}"` : '';
@@ -469,7 +471,9 @@ function renderCard(name, data) {
       const cancelGroupBtn = cancelableIds.length > 1 && name !== 'local'
         ? `<button class="action-btn cancel-group-btn" onclick="event.stopPropagation();cancelGroup('${name}','${idsAttr}','${gk.replace(/'/g, "\\'")}')">cancel group</button>`
         : '';
-      return `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="10"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
+      const isBgRun = typeof isBackgroundRun === 'function' && isBackgroundRun(gk);
+      const bgHeadCls = isBgRun ? ' bg-run' : '';
+      return `<tr class="group-head-row${bgHeadCls}" onclick="toggleRunGroup('${groupId}')"><td colspan="10"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
     }).join('');
 
     body = `<div class="card-body">
