@@ -483,7 +483,8 @@ function renderCard(name, data) {
   }
 
   const pinnedCount = jobs.filter(j => j._pinned).length;
-  const pinnedFailedCount = jobs.filter(j => j._pinned && isFailedLikeState(j.state)).length;
+  const pinnedFailedCount = jobs.filter(j => j._pinned && _isFailedNotCancelled(j.state)).length;
+  const pinnedCancelledCount = jobs.filter(j => j._pinned && _isCancelledState(j.state)).length;
   const pinnedCompletedCount = jobs.filter(j => j._pinned && isCompletedState(j.state)).length;
   const liveCount   = jobs.filter(j => !j._pinned).length;
 
@@ -492,6 +493,9 @@ function renderCard(name, data) {
     : '';
   const clearFailedBtn = pinnedFailedCount > 0
     ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="clearFailed('${name}')">clear ${pinnedFailedCount} failed</button>`
+    : '';
+  const clearCancelledBtn = pinnedCancelledCount > 0
+    ? `<button class="icon-btn" style="border-color:var(--gray-bd);color:var(--muted)" onclick="clearCancelled('${name}')">clear ${pinnedCancelledCount} cancelled</button>`
     : '';
   const clearCompletedBtn = pinnedCompletedCount > 0
     ? `<button class="icon-btn" style="border-color:#bbf7d0;color:var(--green)" onclick="clearCompleted('${name}')">clear ${pinnedCompletedCount} done</button>`
@@ -522,6 +526,7 @@ function renderCard(name, data) {
           ${mountBtn}
           <button class="icon-btn" onclick="showClusterHistory('${name}')">history</button>
           ${clearCompletedBtn}
+          ${clearCancelledBtn}
           ${clearFailedBtn}
           ${cancelAllBtn}
         </div>

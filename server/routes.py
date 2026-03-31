@@ -232,6 +232,14 @@ def api_clear_failed(cluster):
     return jsonify({"status": "ok"})
 
 
+@api.route("/api/clear_cancelled/<cluster>", methods=["POST"])
+def api_clear_cancelled(cluster):
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    dismiss_by_state_prefix(cluster, ["CANCELLED"])
+    return jsonify({"status": "ok"})
+
+
 @api.route("/api/clear_completed/<cluster>", methods=["POST"])
 def api_clear_completed(cluster):
     if cluster not in CLUSTERS:

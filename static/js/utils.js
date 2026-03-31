@@ -179,6 +179,15 @@ function isFailedLikeState(s) {
   return s.includes('FAIL') || s.startsWith('CANCEL') || s.startsWith('TIMEOUT') || s.includes('OUT_OF_MEMORY') || s.includes('NODE_FAIL') || s.includes('BOOT_FAIL');
 }
 
+function _isFailedNotCancelled(s) {
+  s = (s || '').toUpperCase();
+  return (s.includes('FAIL') || s.startsWith('TIMEOUT') || s.includes('OUT_OF_MEMORY') || s.includes('NODE_FAIL') || s.includes('BOOT_FAIL')) && !s.startsWith('CANCEL');
+}
+
+function _isCancelledState(s) {
+  return (s || '').toUpperCase().startsWith('CANCEL');
+}
+
 function isCompletedState(s) {
   return (s || '').toUpperCase().startsWith('COMPLETED');
 }

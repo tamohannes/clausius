@@ -429,6 +429,12 @@ async function clearFailed(cluster) {
   fetch(`/api/clear_failed/${cluster}`, { method: 'POST' });
 }
 
+async function clearCancelled(cluster) {
+  _removeJobsFromUI(cluster, j => j._pinned && _isCancelledState(j.state));
+  toast(`Cleared cancelled jobs on ${cluster}`);
+  fetch(`/api/clear_cancelled/${cluster}`, { method: 'POST' });
+}
+
 async function clearCompleted(cluster) {
   _removeJobsFromUI(cluster, j => j._pinned && isCompletedState(j.state));
   toast(`Cleared completed jobs on ${cluster}`);
