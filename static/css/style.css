@@ -1319,11 +1319,6 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   border: 1px solid var(--border);
   margin-bottom: 6px;
 }
-.lb-map-solo {
-  border: 1px solid var(--border); margin-bottom: 6px;
-  opacity: 0.7;
-}
-.lb-map-solo:hover { opacity: 1; }
 .lb-map-icon {
   width: 10px; height: 10px; border-radius: 999px;
   flex-shrink: 0; margin-left: 2px;
@@ -1370,16 +1365,6 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .lb-map-id {
   font-size: 9px; color: var(--muted); opacity: 0.6;
 }
-.lb-map-unlinked { margin-top: 20px; }
-.lb-map-unlinked-label {
-  font-family: var(--mono); font-size: 9px; font-weight: 500;
-  text-transform: uppercase; letter-spacing: 1px; color: var(--muted);
-  margin-bottom: 6px; padding-left: 2px;
-}
-.lb-map-unlinked-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 4px;
-}
-@media (max-width: 700px) { .lb-map-unlinked-grid { grid-template-columns: 1fr; } }
 
 .lb-suggest-box {
   position: fixed; z-index: 1000; display: none;

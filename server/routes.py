@@ -1101,7 +1101,7 @@ def api_logbook_map(project):
     con = get_db()
     rows = con.execute(
         "SELECT id, title, entry_type, created_at, edited_at "
-        "FROM logbook_entries WHERE project=? ORDER BY created_at",
+        "FROM logbook_entries WHERE project=? ORDER BY edited_at DESC",
         (project,),
     ).fetchall()
     links = con.execute(

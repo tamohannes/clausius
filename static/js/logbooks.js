@@ -806,17 +806,10 @@ function _renderMap(el, data) {
   }
 
   const roots = nodes.filter(n => !hasParent.has(n.id));
-  const linked = new Set();
-  for (const l of links) {
-    linked.add(l.source_id);
-    linked.add(l.target_id);
-  }
-  const unlinked = roots.filter(n => !linked.has(n.id));
-  const linkedRoots = roots.filter(n => linked.has(n.id));
 
-  linkedRoots.sort((a, b) => {
+  roots.sort((a, b) => {
     if (a.entry_type !== b.entry_type) return a.entry_type === 'plan' ? -1 : 1;
-    return (a.created_at || '').localeCompare(b.created_at || '');
+    return (b.edited_at || '').localeCompare(a.edited_at || '');
   });
 
   const rendered = new Set();
@@ -827,7 +820,7 @@ function _renderMap(el, data) {
     if (!n) return '';
     const isPlan = n.entry_type === 'plan';
     const kids = (childrenOf[nodeId] || []).filter(id => !rendered.has(id));
-    kids.sort((a, b) => (byId[a]?.created_at || '').localeCompare(byId[b]?.created_at || ''));
+    kids.sort((a, b) => (byId[b]?.edited_at || '').localeCompare(byId[a]?.edited_at || ''));
 
     const nodeCls = isPlan ? 'lb-map-plan' : 'lb-map-note';
     const iconCls = isPlan ? 'is-plan' : 'is-note';
@@ -854,36 +847,14 @@ function _renderMap(el, data) {
   }
 
   let html = _renderMapToggle() + '<div class="lb-map-scroll"><div class="lb-map">';
-  for (const root of linkedRoots) {
+  for (const root of roots) {
     html += `<div class="lb-map-branch">${renderSubtree(root.id, 0)}</div>`;
   }
 
-  const unreached = nodes.filter(n => linked.has(n.id) && !rendered.has(n.id));
+  // Render any nodes in cycles (linked but not reachable from roots).
+  const unreached = nodes.filter(n => !rendered.has(n.id));
   for (const n of unreached) {
     html += `<div class="lb-map-branch">${renderSubtree(n.id, 0)}</div>`;
-  }
-
-  if (unlinked.length) {
-    html += '<div class="lb-map-unlinked">';
-    html += '<div class="lb-map-unlinked-label">Not linked</div>';
-    html += '<div class="lb-map-unlinked-grid">';
-    for (const n of unlinked) {
-      const isPlan = n.entry_type === 'plan';
-      const iconCls = isPlan ? 'is-plan' : 'is-note';
-      const nodeCls = isPlan ? 'lb-map-plan' : 'lb-map-note';
-      html += `<div class="lb-map-node lb-map-solo ${nodeCls}" onclick="_mapClickEntry(${n.id})">
-        <span class="lb-map-icon ${iconCls}" aria-hidden="true"></span>
-        <div class="lb-map-node-text">
-          <span class="lb-map-node-title">${_escMapHtml(n.title)}</span>
-          <span class="lb-map-node-meta">${_fmtMapDate(n.created_at)} <span class="lb-map-id">#${n.id}</span></span>
-        </div>
-      </div>`;
-    }
-    html += '</div></div>';
-  }
-
-  if (!linkedRoots.length && !unreached.length) {
-    html += '<div class="lb-main-empty">No links yet. Write #id in an entry body to reference entry #id and build the map.</div>';
   }
 
   html += '</div></div>';
@@ -1037,7 +1008,7 @@ function _renderGraph(el, data) {
   for (const col of columns.values()) {
     col.sort((a, b) => {
       if (a.entry_type !== b.entry_type) return a.entry_type === 'plan' ? -1 : 1;
-      return (a.created_at || '').localeCompare(b.created_at || '');
+      return (b.edited_at || '').localeCompare(a.edited_at || '');
     });
   }
 
