@@ -6,27 +6,7 @@ Monitor, explore, and manage GPU jobs across HPC clusters from a single browser 
 
 ## Architecture
 
-```
-                  ┌─────────────────────────────────┐
-                  │           Browser UI             │
-                  │  Live Board · Explorer · History  │
-                  │  Logbook · Clusters · Projects    │
-                  └──────────────┬──────────────────┘
-                                 │ HTTP
-  ┌──────────┐    ┌──────────────▼──────────────────┐
-  │ MCP Agent│◄──►│         Flask Backend            │
-  │ (Cursor) │    │   REST API · SQLite · Caches     │
-  └──────────┘    └──────┬───────────┬───────────────┘
-                         │           │
-              ┌──────────▼──┐  ┌─────▼───────────┐
-              │ Login Nodes  │  │ Data-Copier Nodes│
-              │ squeue/sacct │  │  File I/O (logs, │
-              │ scancel      │  │  dirs, JSONL)    │
-              └──────────────┘  └─────────────────┘
-                  Cluster A        Cluster A
-                  Cluster B        Cluster B
-                  Cluster N        Cluster N
-```
+![ncluster architecture](docs/architecture.png)
 
 Three-lane SSH connection pool: **primary** (Slurm control), **background** (metadata), **data** (file I/O routed to data-copier nodes with automatic login-node fallback).
 
