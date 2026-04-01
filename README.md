@@ -10,6 +10,18 @@
   or let your AI coding agent do it through the built-in MCP server.
 </p>
 
+## Quick Start
+
+```bash
+git clone https://github.com/tamohannes/ncluster.git
+cd ncluster
+pip install flask paramiko
+cp conf/config.example.json conf/config.json  # edit with your cluster details
+python app.py
+```
+
+Open [http://localhost:7272](http://localhost:7272)
+
 ## Architecture
 
 ![ncluster architecture](docs/architecture.png)
@@ -124,19 +136,9 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - Mount status detection via `/proc/mounts` (no filesystem stat, never blocks on stale FUSE)
 - No background polling — login nodes are not contacted when nobody is looking
 
-## Quick Start
+## Setup
 
-```bash
-git clone https://github.com/tamohannes/ncluster.git
-cd ncluster
-pip install flask paramiko
-cp conf/config.example.json conf/config.json  # edit with your cluster details
-python app.py
-```
-
-Open [http://localhost:7272](http://localhost:7272)
-
-### MCP Server Setup
+### MCP Server
 
 ```bash
 pip install mcp
