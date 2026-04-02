@@ -72,61 +72,75 @@ async function openProject(projectName, fromTab) {
   document.getElementById('proj-search').value = _restoreProjectSearch(projectName);
   document.querySelectorAll('#proj-state-filters .hist-state-btn').forEach(b => b.classList.add('active'));
 
-  document.getElementById('proj-stats-bar').innerHTML = '<span class="proj-stat-lbl">loading…</span>';
-  document.getElementById('proj-live-section').innerHTML = '';
-  document.getElementById('project-hist-body').innerHTML = '<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--muted)">loading…</td></tr>';
+  const hasCachedData = _projCurrentName === projectName && (_projLiveJobs.length > 0 || _projGroups.length > 0);
+  if (!hasCachedData) {
+    document.getElementById('proj-stats-bar').innerHTML = '<span class="proj-stat-lbl">loading…</span>';
+    document.getElementById('proj-live-section').innerHTML = '';
+    const histCards = document.getElementById('proj-hist-cards');
+    if (histCards) histCards.innerHTML = '<div class="no-jobs">loading…</div>';
+  }
 
-  await _fetchProjectData();
+  _fetchProjectData(!hasCachedData);
 
   if (_projRefreshTimer) clearInterval(_projRefreshTimer);
   _projRefreshTimer = setInterval(() => {
     if (document.hidden) return;
-    if (currentTab === 'project') _fetchProjectData();
+    if (currentTab === 'project') _fetchProjectData(false);
   }, 30000);
 }
 
 async function refreshProjectPage() {
-  if (_projCurrentName) await _fetchProjectData();
+  if (_projCurrentName) await _fetchProjectData(true);
 }
 
-async function _fetchProjectData() {
+async function _fetchProjectData(showToast) {
   const name = _projCurrentName;
   if (!name) return;
 
-  // Fetch live jobs and history in parallel
-  const [liveRes, histRes] = await Promise.all([
-    fetch('/api/jobs').then(r => r.json()).catch(() => ({})),
-    fetch(`/api/history?project=${encodeURIComponent(name)}&limit=10000`).then(r => r.json()).catch(() => []),
-  ]);
+  const t = showToast ? toastLoading(`Loading ${name}…`) : null;
 
-  // Extract live + pinned jobs for this project from the board.
-  // Pinned jobs (recently completed/failed) are included so runs stay together.
-  _projLiveJobs = [];
-  const clusterActivity = {};
-  if (typeof liveRes === 'object' && !Array.isArray(liveRes)) {
-    for (const [cname, cdata] of Object.entries(liveRes)) {
-      if (!cdata || cdata.status !== 'ok') continue;
-      for (const j of (cdata.jobs || [])) {
-        if (j.project === name) {
-          _projLiveJobs.push({ ...j, _cluster: cname });
-          const st = (j.state || '').toUpperCase();
-          if (!j._pinned) {
-            if (!clusterActivity[cname]) clusterActivity[cname] = { running: 0, pending: 0 };
-            if (st === 'RUNNING' || st === 'COMPLETING') clusterActivity[cname].running++;
-            else if (st === 'PENDING') clusterActivity[cname].pending++;
+  try {
+    const cachedLive = (typeof allData !== 'undefined' && Object.keys(allData).length) ? allData : null;
+    const [liveRes, histRes] = await Promise.all([
+      cachedLive ? Promise.resolve(cachedLive) : fetch('/api/jobs').then(r => r.json()).catch(() => ({})),
+      fetch(`/api/history?project=${encodeURIComponent(name)}&limit=10000`).then(r => r.json()).catch(() => []),
+    ]);
+
+    _projLiveJobs = [];
+    const clusterActivity = {};
+    if (typeof liveRes === 'object' && !Array.isArray(liveRes)) {
+      for (const [cname, cdata] of Object.entries(liveRes)) {
+        if (!cdata || cdata.status !== 'ok') continue;
+        for (const j of (cdata.jobs || [])) {
+          if (j.project === name) {
+            _projLiveJobs.push({ ...j, _cluster: cname });
+            const st = (j.state || '').toUpperCase();
+            if (!j._pinned) {
+              if (!clusterActivity[cname]) clusterActivity[cname] = { running: 0, pending: 0 };
+              if (st === 'RUNNING' || st === 'COMPLETING') clusterActivity[cname].running++;
+              else if (st === 'PENDING') clusterActivity[cname].pending++;
+            }
           }
         }
       }
     }
+
+    const activeLiveIds = new Set(_projLiveJobs.filter(j => !j._pinned).map(j => String(j.jobid)));
+    _projData = (Array.isArray(histRes) ? histRes : []).filter(r => !activeLiveIds.has(String(r.job_id)));
+    _projPage = 0;
+
+    _renderProjStats(clusterActivity);
+    _renderProjLive();
+    filterProjectRuns();
+
+    if (t) {
+      const liveCount = _projLiveJobs.filter(j => !j._pinned).length;
+      const histCount = _projData.length;
+      t.done(`${name}: ${liveCount} live, ${histCount} archived`);
+    }
+  } catch (e) {
+    if (t) t.done(`Failed to load ${name}`, 'error');
   }
-
-  const activeLiveIds = new Set(_projLiveJobs.filter(j => !j._pinned).map(j => String(j.jobid)));
-  _projData = (Array.isArray(histRes) ? histRes : []).filter(r => !activeLiveIds.has(String(r.job_id)));
-  _projPage = 0;
-
-  _renderProjStats(clusterActivity);
-  _renderProjLive();
-  filterProjectRuns();
   _saveProgressCache();
 }
 
@@ -164,120 +178,47 @@ function _renderProjStats(clusterActivity) {
 
 function _renderProjLive() {
   const el = document.getElementById('proj-live-section');
-  // Only show this section if there are any non-pinned (truly live) jobs.
-  const hasLive = _projLiveJobs.some(j => !j._pinned);
-  if (!hasLive) {
+  const name = _projCurrentName;
+
+  // Build filtered data: for each cluster, only include this project's jobs
+  const filteredData = {};
+  const source = (typeof allData !== 'undefined' && Object.keys(allData).length) ? allData : {};
+  for (const [cluster, cdata] of Object.entries(source)) {
+    if (!cdata || cdata.status !== 'ok') continue;
+    const projJobs = (cdata.jobs || []).filter(j => j.project === name);
+    if (projJobs.length) {
+      filteredData[cluster] = { ...cdata, jobs: projJobs };
+    }
+  }
+
+  const hasLive = Object.values(filteredData).some(d => d.jobs.some(j => !j._pinned));
+
+  if (!Object.keys(filteredData).length) {
     el.innerHTML = '';
-    return;
+  } else {
+    // Reuse the Live dashboard's renderCard for each cluster
+    const clusterNames = Object.keys(filteredData).sort();
+    el.innerHTML = `<div class="proj-live-label">● live jobs</div><div class="grid${clusterNames.length === 1 ? ' single-card' : ''}">${clusterNames.map(c => renderCard(c, filteredData[c])).join('')}</div>`;
   }
 
-  const byCluster = {};
-  for (const j of _projLiveJobs) {
-    if (!byCluster[j._cluster]) byCluster[j._cluster] = [];
-    byCluster[j._cluster].push(j);
+  const sep = document.getElementById('proj-archive-sep');
+  if (sep) {
+    const chevron = _archivedVisible ? '▾' : '▸';
+    sep.innerHTML = `${chevron} archived runs`;
   }
+}
 
-  // Pre-collect all live group keys for name highlighting
-  const _liveGroupEntries = [];
-  for (const [cluster, jobs] of Object.entries(byCluster)) {
-    if (!jobs.some(j => !j._pinned)) continue;
-    for (const [gk, groupJobs] of groupJobsByDependency(jobs)) {
-      if (groupJobs.some(j => !j._pinned)) _liveGroupEntries.push(gk);
-    }
+let _archivedVisible = false;
+
+function toggleArchivedRuns() {
+  _archivedVisible = !_archivedVisible;
+  const wrap = document.getElementById('proj-archive-wrap');
+  const sep = document.getElementById('proj-archive-sep');
+  if (wrap) wrap.style.display = _archivedVisible ? '' : 'none';
+  if (sep) {
+    const chevron = _archivedVisible ? '▾' : '▸';
+    sep.innerHTML = `${chevron} archived runs`;
   }
-  const _liveGkHL = computeNameHighlight(_liveGroupEntries);
-
-  let html = '<div class="proj-live-label">● live jobs</div>';
-  for (const [cluster, jobs] of Object.entries(byCluster)) {
-    // Only render clusters that have at least one non-pinned job.
-    if (!jobs.some(j => !j._pinned)) continue;
-    const groups = groupJobsByDependency(jobs);
-    for (const [gk, groupJobs] of groups) {
-      // Only render groups that contain at least one active job.
-      if (!groupJobs.some(j => !j._pinned)) continue;
-      const idSet = new Set(groupJobs.map(j => j.jobid));
-      const byId = {};
-      for (const j of groupJobs) byId[j.jobid] = j;
-      const depthMemo = {};
-
-      const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
-      const rootJobId = rootJob.jobid;
-      const safeGk = gk.replace(/'/g, "\\'");
-      const _projColor = groupJobs[0]?.project_color || '';
-      const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
-      const highlightedGk = highlightJobName(gk, _liveGkHL.prefix, _liveGkHL.suffix);
-      const runBadge = cluster !== 'local'
-        ? `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeGk}')" title="${gk.replace(/"/g, '&quot;')}">${highlightedGk}</span>`
-        : highlightedGk;
-      const hasMultiple = groupJobs.length > 1;
-      const groupId = `${cluster}:${rootJobId}`;
-      const isGroupExpanded = _expandedGroups.has(groupId);
-      let groupLabelHtml, headOnclick;
-      if (hasMultiple) {
-        const chevronCls = isGroupExpanded ? ' expanded' : '';
-        const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
-        const donutHtml = statusDonut(groupJobs);
-        const summaryHtml = statusSummaryHtml(groupJobs);
-        groupLabelHtml = `<span>${chevronHtml}${donutHtml}${runBadge} ${cluster} ${summaryHtml} <span class="group-count">· ${groupJobs.length} runs</span></span>`;
-        headOnclick = ` onclick="toggleRunGroup('${groupId}')"`;
-      } else {
-        groupLabelHtml = `${runBadge} ${cluster} <span class="group-count">· 1 run</span>`;
-        headOnclick = '';
-      }
-      let rows = `<tr class="group-head-row"${headOnclick}><td colspan="11"><span class="group-head-content">${groupLabelHtml}</span></td></tr>`;
-
-      const _liveJobNames = groupJobs.map(j => j.name).filter(Boolean);
-      const _liveJnHL = computeNameHighlight(_liveJobNames);
-
-      for (const j of groupJobs) {
-        const st = (j.state || '').toUpperCase();
-        const isPinned = j._pinned;
-        const depth = depthInGroup(j, byId, idSet, depthMemo);
-        const gpuStr = parseGpus(j.nodes, j.gres);
-        const resourceCell = gpuStr
-          ? `<span style="color:var(--text);font-weight:500">${gpuStr}</span>`
-          : `<span class="dim">${j.nodes || '—'}n</span>`;
-        const startTime = fmtStartCell(j);
-        const endTime = isPinned ? fmtTime(j.ended_local || j.ended_at) : '—';
-        const safeName = (j.name || '').replace(/'/g, "\\'");
-        const isPending = st === 'PENDING';
-        const logBtn = isPending ? '' : `<button class="action-btn log-btn" onclick="openLog('${cluster}','${j.jobid}','${safeName}')">log</button>`;
-        const statsBtn = isPending ? '' : (cluster === 'local'
-          ? ''
-          : `<button class="action-btn log-btn" onclick="openStats('${cluster}','${j.jobid}','${safeName}')">stats</button>`);
-        const tailAction = isPinned
-          ? `<button class="action-btn" title="dismiss" onclick="dismissFailed('${cluster}','${j.jobid}')">✕</button>`
-          : `<button class="action-btn" onclick="cancelJob('${cluster}','${j.jobid}')">cancel</button>`;
-        const depBadge = depBadgeHtml(j, byId);
-        const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
-        const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
-        const hasGpu = !!gpuStr;
-        const nameCls = hasGpu ? '' : ' name-cpu';
-        const pinKind = isPinned ? (isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
-
-        const _prog = resolveProgress(cluster, j.jobid, j.progress, j.state, j.progress_source);
-        const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
-        const _grpHidden = hasMultiple && !isGroupExpanded;
-        const _rowDisp = _grpHidden ? 'display:none' : '';
-        const _rowStyle = [_rowBg, _rowDisp].filter(Boolean).join(';');
-        const _grpAttr = hasMultiple ? ` data-run-group="${groupId}"` : '';
-        rows += `<tr class="${isPinned ? 'pinned-row' : ''} ${pinKind}"${_grpAttr} style="${_rowStyle}">
-          <td class="dim">${j.jobid}</td>
-          <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _liveJnHL.prefix, _liveJnHL.suffix) : '—'}</span></td>
-          <td>${stateChip(j.state, _prog.pct, j.reason, j.exit_code, j.crash_detected, j.est_start, undefined, _prog.source)} ${depBadge}</td>
-          <td>${logBtn} ${statsBtn}</td>
-          <td class="dim">${startTime}</td>
-          <td class="dim">${endTime}</td>
-          <td class="dim">${j.elapsed || '—'}</td>
-          <td>${resourceCell}</td>
-          <td class="dim">${j.partition || '—'}</td>
-          <td>${tailAction}</td>
-        </tr>`;
-      }
-      html += `<div class="proj-live-card"><table><thead><tr><th>ID</th><th>Name</th><th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
-    }
-  }
-  el.innerHTML = html;
 }
 
 function toggleProjStateFilter(btn) {
@@ -348,95 +289,108 @@ function _buildProjGroups(rows) {
 }
 
 function _renderProjPage() {
-  const tbody = document.getElementById('project-hist-body');
+  const container = document.getElementById('proj-hist-cards');
+  if (!container) return;
   const totalGroups = _projGroups.length;
   const totalPages = Math.max(1, Math.ceil(totalGroups / PROJ_GROUPS_PER_PAGE));
   if (_projPage >= totalPages) _projPage = totalPages - 1;
   if (_projPage < 0) _projPage = 0;
 
   if (!totalGroups) {
-    tbody.innerHTML = '<tr><td colspan="11" style="padding:20px;text-align:center;color:var(--muted)">no runs match filters</td></tr>';
+    container.innerHTML = '<div class="no-jobs" style="padding:20px;text-align:center">no runs match filters</div>';
     document.getElementById('proj-pagination').innerHTML = '';
     return;
   }
 
   const start = _projPage * PROJ_GROUPS_PER_PAGE;
   const pageGroups = _projGroups.slice(start, start + PROJ_GROUPS_PER_PAGE);
-  const _projGkHL = computeNameHighlight(pageGroups.map(g => g.label));
+
+  // Group page groups by cluster
+  const byCluster = {};
+  for (const g of pageGroups) {
+    if (!byCluster[g.cluster]) byCluster[g.cluster] = [];
+    byCluster[g.cluster].push(g);
+  }
 
   let html = '';
-  pageGroups.forEach((g, gidx) => {
-    const groupJobs = g.jobs;
-    const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
-    const rootJobId = rootJob.jobid;
-    const safeLabel = g.label.replace(/'/g, "\\'");
-    const _projColor = groupJobs[0]?.project_color || '';
-    const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
-    const highlightedLabel = highlightJobName(g.label, _projGkHL.prefix, _projGkHL.suffix);
-    const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
-    const hasMultiple = groupJobs.length > 1;
-    const groupId = `${g.cluster}:${rootJobId}`;
-    const isGroupExpanded = _expandedGroups.has(groupId);
-    if (hasMultiple) {
+  for (const [cluster, groups] of Object.entries(byCluster)) {
+    const gpuType = CLUSTERS[cluster]?.gpu_type || '';
+    const gpuBadge = gpuType ? `<span class="avail-gpu-badge">${gpuType}</span>` : '';
+    const totalJobs = groups.reduce((s, g) => s + g.jobs.length, 0);
+
+    html += `<div class="proj-hist-card"><div class="proj-hist-card-head">${cluster} ${gpuBadge} <span class="group-count">${groups.length} runs · ${totalJobs} jobs</span></div>`;
+    html += `<table class="proj-compact-table"><thead><tr><th>ID</th><th>Name</th><th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th></tr></thead><tbody>`;
+
+    const _clusterGkHL = computeNameHighlight(groups.map(g => g.label));
+
+    groups.forEach((g, gidx) => {
+      const groupJobs = g.jobs;
+      const rootJob = groupJobs.find(j => !(j.depends_on || []).length) || groupJobs[0];
+      const rootJobId = rootJob.jobid;
+      const safeLabel = g.label.replace(/'/g, "\\'");
+      const _projColor = groupJobs[0]?.project_color || '';
+      const runBadgeStyle = _projColor ? projectBadgeStyle(_projColor) : '';
+      const highlightedLabel = highlightJobName(g.label, _clusterGkHL.prefix, _clusterGkHL.suffix);
+      const runBadge = `<span class="run-name-badge"${runBadgeStyle} onclick="event.stopPropagation();openRunInfo('${cluster}','${rootJobId}','${safeLabel}')" title="${g.label.replace(/"/g, '&quot;')}">${highlightedLabel}</span>`;
+      const hasMultiple = groupJobs.length > 1;
+      const groupId = `${cluster}:${rootJobId}`;
+      const isGroupExpanded = _expandedGroups.has(groupId);
+
       const chevronCls = isGroupExpanded ? ' expanded' : '';
-      const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
+      const chevronHtml = hasMultiple ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${groupJobs.length} runs</span></span>`;
-      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
-    }
-    const idSet = new Set(groupJobs.map(j => j.jobid));
-    const byId = {};
-    for (const j of groupJobs) byId[j.jobid] = j;
-    const depthMemo = {};
-    const _projJobNames = groupJobs.map(j => j.name).filter(Boolean);
-    const _projJnHL = computeNameHighlight(_projJobNames);
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}</span></span>`;
+      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="9"><span class="group-head-content">${groupLabel}</span></td></tr>`;
 
-    groupJobs.forEach(j => {
-      const st = (j.state || '').toUpperCase();
-      const depth = depthInGroup(j, byId, idSet, depthMemo);
-      const gpuStr = parseGpus(j.nodes, j.gres) || '—';
-      const safeName = (j.name || '').replace(/'/g, "\\'");
-      const logBtn = `<button class="action-btn log-btn" onclick="openLog('${g.cluster}','${j.jobid}','${safeName}')">log</button>`;
-      const statsBtn = `<button class="action-btn log-btn" onclick="openStats('${g.cluster}','${j.jobid}','${safeName}')">stats</button>`;
-      const depBadge = depBadgeHtml(j, byId);
-      const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
-      const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
-      const pinKind = isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : (isFailedLikeState(st) ? 'pinned-failed-row' : '');
-      const bgClass = groupJobs.length > 1 ? ` group-bg-${(start + gidx) % 4}` : '';
-      const started = fmtTime(j.started_local || j.started);
-      const ended = fmtTime(j.ended_local || j.ended_at);
-      const hasGpu = parseGpus(j.nodes, j.gres) !== null;
-      const nameCls = hasGpu ? '' : ' name-cpu';
-      const _rowBg = j.project_color ? `background:${lightenColor(j.project_color)}` : '';
-      const _grpHidden = hasMultiple && !isGroupExpanded;
-      const _rowDisp = _grpHidden ? 'display:none' : '';
-      const _rowStyle = [_rowBg, _rowDisp].filter(Boolean).join(';');
-      const _grpAttr = hasMultiple ? ` data-run-group="${groupId}"` : '';
+      const idSet = new Set(groupJobs.map(j => j.jobid));
+      const byId = {};
+      for (const j of groupJobs) byId[j.jobid] = j;
+      const depthMemo = {};
+      const _jnHL = computeNameHighlight(groupJobs.map(j => j.name).filter(Boolean));
 
-      html += `<tr class="hist-compact ${pinKind}${bgClass}"${_grpAttr} style="${_rowStyle}">
-        <td><span class="badge">${g.cluster}</span></td>
-        <td class="dim">${j.jobid}</td>
-        <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _projJnHL.prefix, _projJnHL.suffix) : '—'}</span></td>
-        <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>
-        <td>${logBtn} ${statsBtn}</td>
-        <td class="dim">${started}</td>
-        <td class="dim">${ended}</td>
-        <td class="dim">${j.elapsed || '—'}</td>
-        <td class="dim">${gpuStr}</td>
-        <td class="dim">${j.partition || '—'}</td>
-        <td></td>
-      </tr>`;
+      for (const j of groupJobs) {
+        const st = (j.state || '').toUpperCase();
+        const depth = depthInGroup(j, byId, idSet, depthMemo);
+        const gpuStr = parseGpus(j.nodes, j.gres) || '—';
+        const safeName = (j.name || '').replace(/'/g, "\\'");
+        const logBtn = `<button class="action-btn log-btn" onclick="openLog('${cluster}','${j.jobid}','${safeName}')">log</button>`;
+        const statsBtn = `<button class="action-btn log-btn" onclick="openStats('${cluster}','${j.jobid}','${safeName}')">stats</button>`;
+        const depBadge = depBadgeHtml(j, byId);
+        const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
+        const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
+        const pinKind = isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : (isFailedLikeState(st) ? 'pinned-failed-row' : '');
+        const started = fmtTime(j.started_local || j.started);
+        const ended = fmtTime(j.ended_local || j.ended_at);
+        const nameCls = parseGpus(j.nodes, j.gres) !== null ? '' : ' name-cpu';
+        const _grpHidden = hasMultiple && !isGroupExpanded;
+        const _rowDisp = _grpHidden ? 'display:none' : '';
+        const _grpAttr = ` data-run-group="${groupId}"`;
+
+        html += `<tr class="hist-compact ${pinKind}"${_grpAttr} style="${_rowDisp}">
+          <td class="dim">${j.jobid}</td>
+          <td class="bold">${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${j.name ? highlightJobName(j.name, _jnHL.prefix, _jnHL.suffix) : '—'}</span></td>
+          <td>${stateChip(j.state, null, j.reason, j.exit_code)} ${depBadge}</td>
+          <td>${logBtn} ${statsBtn}</td>
+          <td class="dim">${started}</td>
+          <td class="dim">${ended}</td>
+          <td class="dim">${j.elapsed || '—'}</td>
+          <td class="dim">${gpuStr}</td>
+          <td class="dim">${j.partition || '—'}</td>
+        </tr>`;
+      }
     });
-  });
-  tbody.innerHTML = html;
+
+    html += '</tbody></table></div>';
+  }
+  container.innerHTML = html;
 
   const pag = document.getElementById('proj-pagination');
   pag.innerHTML = `
     <button onclick="projPrev()" ${_projPage === 0 ? 'disabled' : ''}>← prev</button>
     <span class="page-info">${_projPage + 1} / ${totalPages}</span>
     <button onclick="projNext()" ${_projPage >= totalPages - 1 ? 'disabled' : ''}>next →</button>
-    <span style="margin-left:8px;font-size:10px">${totalGroups} groups</span>
+    <span style="margin-left:8px;font-size:10px">${totalGroups} runs</span>
   `;
 }
 

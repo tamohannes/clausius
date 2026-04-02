@@ -119,27 +119,22 @@
         <div class="proj-main">
           <div class="proj-stats-bar" id="proj-stats-bar"></div>
           <div class="proj-live-section" id="proj-live-section"></div>
-          <div class="history-filter">
-            <input id="proj-search" type="text" placeholder="filter by run name, job name, or job id…" oninput="filterProjectRuns()" />
-            <div class="hist-state-filters" id="proj-state-filters">
-              <button class="hist-state-btn s-COMPLETED active" data-state="COMPLETED" onclick="toggleProjStateFilter(this)">completed</button>
-              <button class="hist-state-btn s-FAILED active" data-state="FAILED" onclick="toggleProjStateFilter(this)">failed</button>
-              <button class="hist-state-btn s-CANCELLED active" data-state="CANCELLED" onclick="toggleProjStateFilter(this)">cancelled</button>
-              <button class="hist-state-btn s-FAILED active" data-state="TIMEOUT" onclick="toggleProjStateFilter(this)">timeout</button>
-              <button class="hist-state-btn s-RUNNING active" data-state="RUNNING" onclick="toggleProjStateFilter(this)">running</button>
-              <button class="hist-state-btn s-PENDING active" data-state="PENDING" onclick="toggleProjStateFilter(this)">pending</button>
+          <div class="proj-section-sep" id="proj-archive-sep" onclick="toggleArchivedRuns()"></div>
+          <div id="proj-archive-wrap" style="display:none">
+            <div class="history-filter">
+              <input id="proj-search" type="text" placeholder="filter by run name, job name, or job id…" oninput="filterProjectRuns()" />
+              <div class="hist-state-filters" id="proj-state-filters">
+                <button class="hist-state-btn s-COMPLETED active" data-state="COMPLETED" onclick="toggleProjStateFilter(this)">completed</button>
+                <button class="hist-state-btn s-FAILED active" data-state="FAILED" onclick="toggleProjStateFilter(this)">failed</button>
+                <button class="hist-state-btn s-CANCELLED active" data-state="CANCELLED" onclick="toggleProjStateFilter(this)">cancelled</button>
+                <button class="hist-state-btn s-FAILED active" data-state="TIMEOUT" onclick="toggleProjStateFilter(this)">timeout</button>
+                <button class="hist-state-btn s-RUNNING active" data-state="RUNNING" onclick="toggleProjStateFilter(this)">running</button>
+                <button class="hist-state-btn s-PENDING active" data-state="PENDING" onclick="toggleProjStateFilter(this)">pending</button>
+              </div>
             </div>
+            <div id="proj-hist-cards"></div>
+            <div class="hist-pagination" id="proj-pagination"></div>
           </div>
-          <div class="history-table-wrap">
-            <table id="project-hist-table">
-              <thead><tr>
-                <th>Cluster</th><th>ID</th><th>Name</th>
-                <th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th></th>
-              </tr></thead>
-              <tbody id="project-hist-body"></tbody>
-            </table>
-          </div>
-          <div class="hist-pagination" id="proj-pagination"></div>
         </div>
       </div>
     </div>

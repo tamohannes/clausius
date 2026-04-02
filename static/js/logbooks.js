@@ -12,6 +12,32 @@ const LB_SIDEBAR_WIDTH_KEY = 'ncluster.lbSidebarWidth';
 const LB_SIDEBAR_MIN = 200;
 const LB_SIDEBAR_MAX = 600;
 const LB_MAP_VIEW_KEY = 'ncluster.lbMapView';
+const LB_PINS_KEY = 'ncluster.lbPinnedEntries';
+
+function _getPinnedIds() {
+  try {
+    const raw = localStorage.getItem(LB_PINS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch (_) { return {}; }
+}
+
+function _savePinnedIds(pins) {
+  try { localStorage.setItem(LB_PINS_KEY, JSON.stringify(pins)); } catch (_) {}
+}
+
+function togglePinEntry(entryId, project) {
+  const pins = _getPinnedIds();
+  const key = `${project || _lbProject}:${entryId}`;
+  if (pins[key]) delete pins[key];
+  else pins[key] = true;
+  _savePinnedIds(pins);
+  if (_lbProject) _loadEntries(_lbProject);
+}
+
+function _isEntryPinned(entryId, project) {
+  const pins = _getPinnedIds();
+  return !!pins[`${project || _lbProject}:${entryId}`];
+}
 
 (function setupLbSplitter() {
   let dragging = false;
@@ -124,22 +150,42 @@ function _renderSidebarList(entries) {
     el.innerHTML = '<div class="lb-sidebar-empty">No entries yet.</div>';
     return;
   }
-  el.innerHTML = entries.map(e => {
+
+  const pinned = entries.filter(e => _isEntryPinned(e.id));
+  const unpinned = entries.filter(e => !_isEntryPinned(e.id));
+  const sorted = [...pinned, ...unpinned];
+
+  let html = '';
+  if (pinned.length && unpinned.length) {
+    html += _renderSidebarItems(pinned, true);
+    html += '<div class="lb-sidebar-pin-sep"></div>';
+    html += _renderSidebarItems(unpinned, false);
+  } else {
+    html += _renderSidebarItems(sorted, false);
+  }
+  el.innerHTML = html;
+  if (typeof _appTabs !== 'undefined' && typeof _activeTabId !== 'undefined') {
+    const at = _appTabs.find(t => t.id === _activeTabId);
+    if (at && at.lbEntryId) _highlightSidebarItem(at.lbEntryId);
+  }
+}
+
+function _renderSidebarItems(items, showPinIcon) {
+  return items.map(e => {
     const date = _formatDate(e.created_at);
     const title = (e.title || '').replace(/</g, '&lt;');
     const preview = (e.body_preview || '').replace(/</g, '&lt;').replace(/\n/g, ' ');
     const isPlan = e.entry_type === 'plan';
     const typeCls = isPlan ? ' lb-type-plan' : '';
-    return `<div class="lb-sidebar-item${typeCls}" data-id="${e.id}" onclick="openLogbookEntry(${e.id})">
-      <div class="lb-sidebar-item-title">${title} <span class="lb-sidebar-item-id">#${e.id}</span></div>
+    const pinned = _isEntryPinned(e.id);
+    const pinCls = pinned ? ' lb-pinned' : '';
+    const pinBtn = `<span class="lb-pin-btn${pinned ? ' active' : ''}" onclick="event.stopPropagation();togglePinEntry(${e.id})" title="${pinned ? 'Unpin' : 'Pin'}">📌</span>`;
+    return `<div class="lb-sidebar-item${typeCls}${pinCls}" data-id="${e.id}" onclick="openLogbookEntry(${e.id})">
+      <div class="lb-sidebar-item-title">${pinBtn}${title} <span class="lb-sidebar-item-id">#${e.id}</span></div>
       <div class="lb-sidebar-item-date">${date}</div>
       <div class="lb-sidebar-item-preview">${preview}</div>
     </div>`;
   }).join('');
-  if (typeof _appTabs !== 'undefined' && typeof _activeTabId !== 'undefined') {
-    const at = _appTabs.find(t => t.id === _activeTabId);
-    if (at && at.lbEntryId) _highlightSidebarItem(at.lbEntryId);
-  }
 }
 
 function _highlightSidebarItem(id) {
