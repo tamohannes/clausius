@@ -262,13 +262,17 @@ def _sync_config():
         "exclude": LOCAL_PROC_EXCLUDE,
     }
     _CONFIG["projects"] = dict(PROJECTS)
-    clusters_out = {}
+    existing_clusters = _CONFIG.get("clusters", {})
     for cname, ccfg in CLUSTERS.items():
         if cname == "local":
             continue
-        clusters_out[cname] = {k: v for k, v in ccfg.items() if k not in ("host",) or v}
-    if clusters_out:
-        _CONFIG["clusters"] = clusters_out
+        if cname in existing_clusters:
+            for k in ("host", "data_host", "user", "port", "gpu_type", "gpus_per_node", "account"):
+                if k in ccfg and ccfg[k]:
+                    existing_clusters[cname][k] = ccfg[k]
+        else:
+            existing_clusters[cname] = {k: v for k, v in ccfg.items() if v}
+    _CONFIG["clusters"] = existing_clusters
 
 
 def _write_config():

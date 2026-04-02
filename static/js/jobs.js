@@ -824,7 +824,7 @@ function _renderAll() {
 }
 
 function _attachPendingTooltips() {
-  if (!_clusterUtil) return;
+  if (!_clusterUtil && !_partitionData) return;
   document.querySelectorAll('.pending-util-chip').forEach(chip => {
     if (chip._utilBound) return;
     const card = chip.closest('.card');

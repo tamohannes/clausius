@@ -53,6 +53,12 @@ async function loadProjectButtons() {
 
 async function openProject(projectName, fromTab) {
   _projCurrentName = projectName;
+  _projHistLoaded = false;
+  _archivedVisible = false;
+  const archWrap = document.getElementById('proj-archive-wrap');
+  if (archWrap) archWrap.style.display = 'none';
+  _projData = [];
+  _projGroups = [];
   try { sessionStorage.setItem('ncluster.activeProject', projectName); } catch (_) {}
   if (!fromTab) {
     const at = _appTabs.find(t => t.id === _activeTabId);
@@ -93,6 +99,8 @@ async function refreshProjectPage() {
   if (_projCurrentName) await _fetchProjectData(true);
 }
 
+let _projHistLoaded = false;
+
 async function _fetchProjectData(showToast) {
   const name = _projCurrentName;
   if (!name) return;
@@ -101,10 +109,7 @@ async function _fetchProjectData(showToast) {
 
   try {
     const cachedLive = (typeof allData !== 'undefined' && Object.keys(allData).length) ? allData : null;
-    const [liveRes, histRes] = await Promise.all([
-      cachedLive ? Promise.resolve(cachedLive) : fetch('/api/jobs').then(r => r.json()).catch(() => ({})),
-      fetch(`/api/history?project=${encodeURIComponent(name)}&limit=10000`).then(r => r.json()).catch(() => []),
-    ]);
+    const liveRes = cachedLive || await fetch('/api/jobs').then(r => r.json()).catch(() => ({}));
 
     _projLiveJobs = [];
     const clusterActivity = {};
@@ -125,21 +130,30 @@ async function _fetchProjectData(showToast) {
       }
     }
 
+    _renderProjStats(clusterActivity);
+    _renderProjLive();
+
+    const liveCount = _projLiveJobs.filter(j => !j._pinned).length;
+    if (t) t.done(`${name}: ${liveCount} live jobs`);
+  } catch (e) {
+    if (t) t.done(`Failed to load ${name}`, 'error');
+  }
+}
+
+async function _fetchProjectHistory() {
+  const name = _projCurrentName;
+  if (!name) return;
+  const t = toastLoading(`Loading archived runs…`);
+  try {
+    const histRes = await fetch(`/api/history?project=${encodeURIComponent(name)}&limit=10000`).then(r => r.json()).catch(() => []);
     const activeLiveIds = new Set(_projLiveJobs.filter(j => !j._pinned).map(j => String(j.jobid)));
     _projData = (Array.isArray(histRes) ? histRes : []).filter(r => !activeLiveIds.has(String(r.job_id)));
     _projPage = 0;
-
-    _renderProjStats(clusterActivity);
-    _renderProjLive();
+    _projHistLoaded = true;
     filterProjectRuns();
-
-    if (t) {
-      const liveCount = _projLiveJobs.filter(j => !j._pinned).length;
-      const histCount = _projData.length;
-      t.done(`${name}: ${liveCount} live, ${histCount} archived`);
-    }
+    t.done(`${_projData.length} archived runs loaded`);
   } catch (e) {
-    if (t) t.done(`Failed to load ${name}`, 'error');
+    t.done('Failed to load archived runs', 'error');
   }
   _saveProgressCache();
 }
@@ -218,6 +232,9 @@ function toggleArchivedRuns() {
   if (sep) {
     const chevron = _archivedVisible ? '▾' : '▸';
     sep.innerHTML = `${chevron} archived runs`;
+  }
+  if (_archivedVisible && !_projHistLoaded) {
+    _fetchProjectHistory();
   }
 }
 

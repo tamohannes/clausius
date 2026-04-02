@@ -1000,10 +1000,10 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 }
 .lb-sidebar-item:hover { background: var(--surface); }
 .lb-sidebar-item.lb-type-plan {
-  background: color-mix(in srgb, var(--red-bg) 50%, var(--bg)); border-color: var(--red-bd);
+  background: color-mix(in srgb, var(--amber-bg) 25%, var(--bg)); border-color: color-mix(in srgb, var(--amber-bd) 40%, transparent);
 }
 .lb-sidebar-item.lb-type-plan:hover {
-  border-color: var(--red);
+  border-color: color-mix(in srgb, var(--amber-bd) 70%, transparent);
 }
 .lb-sidebar-item.active {
   background: var(--accent-bg); border-color: var(--accent);
@@ -1055,7 +1055,7 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .lb-badge-plan {
   display: inline-block; font-family: var(--mono); font-size: 9px; font-weight: 600;
   padding: 1px 6px; border-radius: 3px; margin-right: 4px;
-  background: var(--red-bg); color: var(--red); border: 1px solid var(--red-bd);
+  background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd);
   vertical-align: middle;
 }
 .lb-badge-note {
@@ -1075,7 +1075,7 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 
 /* ── Entry detail ── */
 .lb-detail { max-width: 800px; margin: 0 auto; }
-.lb-main-plan { background: color-mix(in srgb, var(--red-bg) 50%, var(--bg)); }
+.lb-main-plan { background: color-mix(in srgb, var(--amber-bg) 15%, var(--bg)); }
 .lb-detail-actions { display: flex; gap: 6px; margin-bottom: 16px; align-items: center; }
 .lb-detail-title {
   font-family: var(--mono); font-size: 20px; font-weight: 700;
@@ -1323,20 +1323,21 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   stroke-width: 1;
 }
 .lb-map-gnode.is-plan rect {
-  fill: color-mix(in srgb, var(--red-bg) 50%, var(--bg));
-  stroke: var(--red-bd);
+  fill: color-mix(in srgb, var(--amber-bg) 50%, var(--bg));
+  stroke: var(--amber-bd);
 }
 .lb-map-gnode.is-note rect {
   fill: var(--surface);
   stroke: var(--border);
 }
 .lb-map-gnode:hover rect { stroke: var(--accent); }
+.lb-map-gnode.is-pinned rect { stroke: var(--accent); stroke-width: 2; }
 .lb-map-gnode.is-focus rect {
   stroke: var(--accent);
   stroke-width: 2;
 }
 .lb-map-gnode-dot { stroke: color-mix(in srgb, var(--bg) 40%, transparent); stroke-width: 1; }
-.lb-map-gnode.is-plan .lb-map-gnode-dot { fill: var(--red); }
+.lb-map-gnode.is-plan .lb-map-gnode-dot { fill: var(--amber); }
 .lb-map-gnode.is-note .lb-map-gnode-dot { fill: var(--surface2); stroke: var(--border); }
 .lb-map-gnode-title {
   font-family: var(--mono);
@@ -1373,13 +1374,14 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   transition: background 0.1s;
 }
 .lb-map-node:hover { background: var(--surface); }
+.lb-map-node.lb-map-pinned { border-left: 3px solid var(--accent); }
 .lb-map-plan {
-  background: color-mix(in srgb, var(--red-bg) 50%, var(--bg));
+  background: color-mix(in srgb, var(--amber-bg) 25%, var(--bg));
   font-weight: 600;
-  border: 1px solid var(--red-bd);
+  border: 1px solid var(--amber-bd);
   margin-bottom: 6px;
 }
-.lb-map-plan:hover { border-color: var(--red); }
+.lb-map-plan:hover { border-color: var(--amber); }
 .lb-map-cluster-head {
   background: var(--surface); font-weight: 600;
   border: 1px solid var(--border); margin-bottom: 6px;
@@ -1395,8 +1397,8 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   border: 1px solid transparent;
 }
 .lb-map-icon.is-plan {
-  background: var(--red);
-  border-color: var(--red-bd);
+  background: var(--amber);
+  border-color: var(--amber-bd);
 }
 .lb-map-icon.is-note {
   background: var(--surface2);

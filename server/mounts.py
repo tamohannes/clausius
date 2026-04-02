@@ -422,7 +422,7 @@ def run_mount_script(action, cluster="all"):
 
 # ── Mount health check ──────────────────────────────────────────────────────
 
-MOUNT_HEALTH_INTERVAL = 300  # check every 5 minutes
+MOUNT_HEALTH_INTERVAL = 120  # check every 2 minutes
 
 
 def _test_mount_alive(mount_path, timeout_sec=4):
@@ -440,11 +440,13 @@ def _test_mount_alive(mount_path, timeout_sec=4):
 def _remount_cluster(cluster_name):
     """Force-unmount stale FUSE and remount a cluster."""
     mps = _proc_mount_points()
-    for r in MOUNT_MAP.get(cluster_name, []):
-        rp = _resolve(r)
-        if rp in mps:
-            subprocess.run(["fusermount", "-uz", rp],
-                           capture_output=True, timeout=10)
+    for mp in mps:
+        if f"/mounts/{cluster_name}/" in mp:
+            try:
+                subprocess.run(["fusermount", "-uz", mp],
+                               capture_output=True, timeout=10)
+            except Exception:
+                pass
     time.sleep(1)
     ok, msg = run_mount_script("mount", cluster_name)
     return ok, msg
@@ -458,19 +460,17 @@ def mount_health_check():
     for cluster_name in list(CLUSTERS.keys()):
         if cluster_name == "local":
             continue
-        roots = MOUNT_MAP.get(cluster_name, [])
-        if not roots:
-            continue
 
-        first_root = _resolve(roots[0])
-        if first_root not in mps:
+        active = [mp for mp in mps if f"/mounts/{cluster_name}/" in mp]
+        if not active:
             continue
 
         checked += 1
-        if _test_mount_alive(first_root):
+        test_path = active[0]
+        if _test_mount_alive(test_path):
             continue
 
-        log.warning("Stale mount detected for %s, remounting…", cluster_name)
+        log.warning("Stale mount detected for %s (%s), remounting…", cluster_name, test_path)
         ok, msg = _remount_cluster(cluster_name)
         if ok:
             log.info("Remounted %s: %s", cluster_name, msg)

@@ -139,7 +139,7 @@ function stateChip(s, progress, reason, exitCode, crashDetected, estStart, jobMe
     const pctCls = isSrv ? 'progress-pct progress-pct-server' : 'progress-pct';
     return `<span class="state-chip ${cls}">${s}${progressRing(progress, isSrv)}<span class="${pctCls}">${label}</span></span>`;
   }
-  const hasUtil = st === 'PENDING' && _clusterUtil;
+  const hasUtil = st === 'PENDING' && (_clusterUtil || _partitionData);
   const utilCls = hasUtil ? ' has-util' : '';
   if (st === 'PENDING') {
     const m = jobMeta || {};

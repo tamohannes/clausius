@@ -872,11 +872,12 @@ function _renderMap(el, data) {
 
     const nodeCls = isPlan ? 'lb-map-plan' : 'lb-map-note';
     const iconCls = isPlan ? 'is-plan' : 'is-note';
+    const pinnedCls = _isEntryPinned(n.id) ? ' lb-map-pinned' : '';
     const idBadge = `<span class="lb-map-id">#${n.id}</span>`;
 
     let html = '';
     if (depth > 0) html += '<div class="lb-map-child-wrap">';
-    html += `<div class="lb-map-node ${nodeCls}" onclick="_mapClickEntry(${n.id})">
+    html += `<div class="lb-map-node ${nodeCls}${pinnedCls}" onclick="_mapClickEntry(${n.id})">
       <span class="lb-map-icon ${iconCls}" aria-hidden="true"></span>
       <div class="lb-map-node-text">
         <span class="lb-map-node-title">${_escMapHtml(n.title)}</span>
@@ -1156,7 +1157,8 @@ function _renderGraph(el, data) {
     .attr('class', d => {
       const typeCls = d.entry_type === 'plan' ? 'is-plan' : 'is-note';
       const focusCls = focusKey && String(d.id) === focusKey ? ' is-focus' : '';
-      return `lb-map-gnode ${typeCls}${focusCls}`;
+      const pinCls = _isEntryPinned(d.id) ? ' is-pinned' : '';
+      return `lb-map-gnode ${typeCls}${focusCls}${pinCls}`;
     })
     .attr('transform', d => `translate(${d.x},${d.y})`)
     .on('click', (event, d) => {
