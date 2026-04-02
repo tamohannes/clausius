@@ -10,7 +10,7 @@ import time
 from glob import glob
 
 from .config import (
-    APP_ROOT, CLUSTERS,
+    APP_ROOT, CLUSTERS, LOG_SEARCH_BASES,
     _dir_label,
     _cache_get, _cache_set,
     _log_index_cache, _log_content_cache, LOG_INDEX_TTL_SEC,
@@ -369,7 +369,7 @@ fi
 [ -n "$STDERR" ] && [ "$STDERR" != "$STDOUT" ] && [ -f "$STDERR" ] && emit "$(basename "$STDERR")" "$STDERR"
 """
     try:
-        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=15)
+        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=25)
     except Exception as e:
         return {"files": [], "dirs": [], "error": f"SSH error: {e}"}
 
@@ -379,7 +379,13 @@ fi
     ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
     allowed_suffixes = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
 
+    extra_dirs = []
     for line in out.splitlines():
+        if line.startswith("DIR:"):
+            dparts = line[4:].split(":", 1)
+            if len(dparts) == 2:
+                extra_dirs.append({"label": dparts[0].strip(), "path": dparts[1].strip()})
+            continue
         if not line.startswith("FILE:"):
             continue
         parts = line[5:].split(":", 1)
@@ -397,8 +403,72 @@ fi
             jobid_files.append(entry)
 
     files.sort(key=lambda f: ORDER.get(f["label"], 10))
-    dirs = _derive_result_dirs(jobid_files, cluster_name)
+    dirs = _derive_result_dirs(jobid_files, cluster_name) + extra_dirs
+
+    if not files and not dirs:
+        fallback = _search_log_bases(cluster_name, job_id)
+        if fallback:
+            files = fallback.get("files", [])
+            dirs = fallback.get("dirs", [])
+
     return {"files": files, "dirs": dirs}
+
+
+def _search_log_bases(cluster_name, job_id):
+    """Fallback: search log_search_bases for a directory matching the job's run name."""
+    if cluster_name == "local":
+        return None
+    search_script = f"""#!/bin/sh
+JNAME=$(sacct -j {job_id} --format=JobName%-200 --noheader -P 2>/dev/null | head -1 | tr -d ' ')
+[ -z "$JNAME" ] && exit 0
+RUNNAME=$(echo "$JNAME" | sed 's/^[^_]*_//')
+[ -z "$RUNNAME" ] && exit 0
+for BASE in {" ".join(f'"{b}"' for b in LOG_SEARCH_BASES)}; do
+  [ -d "$BASE" ] || continue
+  FOUND=$(find "$BASE" -maxdepth 3 -type d -name "$RUNNAME" 2>/dev/null | head -1)
+  if [ -n "$FOUND" ] && [ -d "$FOUND" ]; then
+    for F in "$FOUND"/*.log "$FOUND"/*.out "$FOUND"/*.err "$FOUND"/*.json "$FOUND"/*.jsonl; do
+      [ -f "$F" ] && echo "FILE:$(basename "$F"):$F"
+    done
+    for SUB in eval-logs eval-results output; do
+      [ -d "$FOUND/$SUB" ] && echo "DIR:$SUB:$FOUND/$SUB"
+    done
+    # Check one level of subdirs for log files
+    for SD in "$FOUND"/*/; do
+      [ -d "$SD" ] || continue
+      SDNAME=$(basename "$SD")
+      for F in "$SD"/*.log "$SD"/*.out "$SD"/*.jsonl; do
+        [ -f "$F" ] && echo "FILE:$SDNAME/$(basename "$F"):$F"
+      done
+    done
+    break
+  fi
+done
+"""
+    try:
+        out, _ = ssh_run_with_timeout(cluster_name, search_script, timeout_sec=20)
+    except Exception:
+        return None
+    if not out.strip():
+        return None
+
+    files = []
+    dirs = []
+    seen = set()
+    allowed = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
+    for line in out.splitlines():
+        if line.startswith("DIR:"):
+            parts = line[4:].split(":", 1)
+            if len(parts) == 2:
+                dirs.append({"label": parts[0].strip(), "path": parts[1].strip()})
+        elif line.startswith("FILE:"):
+            parts = line[5:].split(":", 1)
+            if len(parts) == 2:
+                raw_label, path = parts[0].strip(), parts[1].strip()
+                if path and path not in seen and path.lower().endswith(allowed):
+                    seen.add(path)
+                    files.append({"label": label_log(raw_label), "path": path})
+    return {"files": files, "dirs": dirs} if (files or dirs) else None
 
 
 def get_job_log_files_cached(cluster_name, job_id, force=False):
