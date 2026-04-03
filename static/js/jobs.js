@@ -272,7 +272,10 @@ function updateSummary(data) {
         if (gm) totalGpus += (parseInt(gm[1]) || 0) * (parseInt(j.nodes) || 1);
       }
       else if (s === 'PENDING') pending++;
-      else if (s.includes('FAIL')) failed++;
+      else if (s.includes('FAIL')) {
+        if (isUnneededBackup(j, d.jobs || [])) completed++;
+        else failed++;
+      }
       else if (s.startsWith('COMPLETED')) completed++;
     }
   }
@@ -452,7 +455,9 @@ function renderCard(name, data) {
         : `<button class="action-btn" onclick="cancelJob('${name}','${j.jobid}')">cancel</button>`;
 
       const depBadge = depBadgeHtml(j, byId);
-      const backupKind = isBackup ? classifyBackupJob(j, byId) : null;
+      let backupKind = isBackup ? classifyBackupJob(j, byId) : null;
+      const isUnneeded = !backupKind && isUnneededBackup(j, groupJobs);
+      if (isUnneeded) backupKind = 'unneeded';
       const bkBadge = backupBadgeHtml(backupKind);
       const indent = depth > 0 ? `<span class="dep-indent" style="padding-left:${depth * 16}px"></span>` : '';
       const depArrow = depth > 0 ? '<span class="dep-arrow">↳</span> ' : '';
@@ -473,7 +478,9 @@ function renderCard(name, data) {
       return `<tr class="${rowClass}"${parentAttr}${groupAttr} style="${_rowBg}${rowDisplay}">
         <td class="dim">${j.jobid}</td>
         <td class="bold">${nameCell}</td>
-        <td>${stateChip(j.state, _prog.pct, j.reason, j.exit_code, j.crash_detected, j.est_start, _jobMeta, _prog.source)} ${bkBadge}${depBadge}</td>
+        <td>${isUnneeded
+          ? `<span class="state-chip s-COMPLETED">SKIPPED</span>`
+          : stateChip(j.state, _prog.pct, j.reason, j.exit_code, j.crash_detected, j.est_start, _jobMeta, _prog.source)} ${bkBadge}${depBadge}</td>
         <td>${quickActions}</td>
         <td class="dim">${startTime}</td>
         <td class="dim">${endTime}</td>

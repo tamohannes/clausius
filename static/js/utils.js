@@ -95,6 +95,31 @@ function isSoftFail(state, reason) {
   return (state || '').toUpperCase() === 'COMPLETED' && (reason || '').startsWith('soft-fail:');
 }
 
+function isUnneededBackup(job, groupJobs) {
+  const st = (job.state || '').toUpperCase();
+  if (!st.includes('FAIL')) return false;
+  const deps = job.dep_details || [];
+  const hasBackupDep = deps.some(d => d.type === 'afterany' || d.type === 'afternotok');
+  if (!hasBackupDep) {
+    const siblings = groupJobs.filter(s => s.name === job.name && s.jobid !== job.jobid);
+    if (!siblings.length) return false;
+    const hasCompleted = siblings.some(s => (s.state || '').toUpperCase().startsWith('COMPLETED'));
+    const jid = parseInt(job.jobid, 10);
+    const hasLowerCompleted = siblings.some(s =>
+      (s.state || '').toUpperCase().startsWith('COMPLETED') && parseInt(s.jobid, 10) < jid
+    );
+    return hasLowerCompleted;
+  }
+  const byId = {};
+  for (const j of groupJobs) byId[j.jobid] = j;
+  for (const d of deps) {
+    if (d.type !== 'afterany' && d.type !== 'afternotok') continue;
+    const parent = byId[d.job_id];
+    if (parent && (parent.state || '').toUpperCase().startsWith('COMPLETED')) return true;
+  }
+  return false;
+}
+
 function stateClass(s, reason) {
   if (isSoftFail(s, reason)) return 's-SOFT_FAIL';
   s = (s || '').toUpperCase().split(' ')[0];
@@ -201,6 +226,7 @@ function _countJobStates(jobs) {
     else if (st === 'PENDING') cnt.pend++;
     else if (st.startsWith('COMPLETED')) cnt.done++;
     else if (st.startsWith('CANCEL')) cnt.canc++;
+    else if (isUnneededBackup(j, jobs)) cnt.done++;
     else cnt.fail++;
   }
   return cnt;
@@ -320,6 +346,9 @@ function backupBadgeHtml(kind) {
   if (kind === 'dormant') {
     return '<span class="backup-badge dormant" title="Backup job — parent completed successfully, this will not run">backup · won\'t run</span>';
   }
+  if (kind === 'unneeded') {
+    return '<span class="backup-badge dormant" title="Backup job — parent completed successfully, backup was not needed">backup · not needed</span>';
+  }
   return '<span class="backup-badge standby" title="Standby backup — will start if parent fails or hits time limit">standby</span>';
 }
 
@@ -328,7 +357,8 @@ function buildBackupInfo(groupJobs, byId) {
   const parentOf = {};
 
   for (const j of groupJobs) {
-    if ((j.state || '').toUpperCase() !== 'PENDING') continue;
+    const jst = (j.state || '').toUpperCase();
+    if (jst !== 'PENDING' && !isUnneededBackup(j, groupJobs)) continue;
     const deps = j.dep_details || [];
     for (const d of deps) {
       if (d.type !== 'afterany' && d.type !== 'afternotok') continue;
