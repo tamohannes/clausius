@@ -2921,6 +2921,16 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
     transparent 3px, transparent 6px
   );
 }
+.ppp-seg-proj { border-right: 1px solid var(--surface); }
+.ppp-seg-proj-pend {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--proj-color, var(--accent)),
+    var(--proj-color, var(--accent)) 3px,
+    transparent 3px, transparent 6px
+  );
+  border-right: 1px solid var(--surface);
+}
 .ppp-seg-ppp-rest { background: #888; opacity: 0.45; }
 .ppp-seg-others { background: #555; }
 .ppp-seg-dim { opacity: 0.35; }
@@ -2944,6 +2954,25 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .ppp-no-alloc {
   font-family: var(--mono); font-size: 9px; color: var(--muted);
   font-style: italic; margin-bottom: 10px;
+}
+.compute-load-bar {
+  height: 3px; width: 100%; border-radius: 2px;
+  background: transparent; overflow: hidden;
+  margin-bottom: 8px;
+}
+.compute-load-bar.active {
+  background: var(--border);
+}
+.compute-load-bar.active::after {
+  content: ''; display: block;
+  height: 100%; width: 30%;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: computeLoadSlide 1.2s ease-in-out infinite;
+}
+@keyframes computeLoadSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
 }
 .wds-size-controls {
   display: flex; align-items: center; gap: 8px;

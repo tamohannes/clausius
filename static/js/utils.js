@@ -850,30 +850,81 @@ function _shortAcct(acct) {
 
 const _PPP_COLORS = ['ppp-c0', 'ppp-c1', 'ppp-c2'];
 
+const _COMPUTE_CACHE_KEY = 'ncluster.computeCache';
+
+function _saveComputeCache() {
+  try {
+    localStorage.setItem(_COMPUTE_CACHE_KEY, JSON.stringify({
+      ts: Date.now(),
+      alloc: _pppAllocData,
+      overlay: _pppOverlayData,
+      myFs: _myFairshareData,
+      teamJobs: _teamJobsData,
+      partitions: _partitionData,
+    }));
+  } catch (_) {}
+}
+
+function _loadComputeCache() {
+  try {
+    const raw = localStorage.getItem(_COMPUTE_CACHE_KEY);
+    if (!raw) return false;
+    const c = JSON.parse(raw);
+    if (!c.alloc || Date.now() - c.ts > 3600000) return false;
+    _pppAllocData = c.alloc;
+    if (c.overlay) _pppOverlayData = c.overlay;
+    if (c.myFs) _myFairshareData = c.myFs;
+    if (c.teamJobs) _teamJobsData = c.teamJobs;
+    if (c.partitions) _partitionData = c.partitions;
+    return true;
+  } catch (_) {}
+  return false;
+}
+
+function _showComputeLoadBar(show) {
+  let bar = document.getElementById('compute-load-bar');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'compute-load-bar';
+    bar.className = 'compute-load-bar';
+    const body = document.getElementById('ppp-alloc-body');
+    if (body) body.parentElement.insertBefore(bar, body);
+  }
+  bar.classList.toggle('active', show);
+}
+
 async function refreshPppAllocations() {
   const el = document.getElementById('ppp-alloc-body');
   if (!el) return;
-  const t = toastLoading('Loading GPU allocations…');
+
+  if (_loadComputeCache() && _pppAllocData) {
+    _renderPppAllocations(_pppAllocData);
+  }
+
+  _showComputeLoadBar(true);
   try {
     const [allocRes] = await Promise.all([
       fetch('/api/aihub/allocations'),
       _ensureOverlayData(),
       fetchPartitions(),
       _fetchMyFairshare(),
+      _fetchTeamJobs(),
+      _fetchProjectColors(),
     ]);
     const data = await allocRes.json();
     if (data.status === 'ok') {
       _pppAllocData = data;
       _renderPppAllocations(data);
-      t.done('Allocation data loaded');
-    } else {
+      _saveComputeCache();
+    } else if (!_pppAllocData) {
       el.innerHTML = `<div class="no-jobs" style="color:var(--red)">${data.error || 'Failed to load'}</div>`;
-      t.done('Failed', 'error');
     }
   } catch (e) {
-    el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to connect to AI Hub</div>';
-    t.done('Failed to load allocation data', 'error');
+    if (!_pppAllocData) {
+      el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to connect to AI Hub</div>';
+    }
   }
+  _showComputeLoadBar(false);
 }
 
 let _teamJobsData = null;
@@ -1141,10 +1192,31 @@ function _renderPppAllocations(data) {
         const teamRunW = Math.min(teamRunGpus, teamOthersTotal);
         const teamPendW = Math.min(teamPendGpus, teamOthersTotal * 0.3);
 
-        if (showMe && myRunGpus > 0)
-          segments += `<div class="ppp-seg ppp-seg-me-run" style="width:${toPct(myRunGpus)}%"></div>`;
-        if (showMe && myPendGpus > 0)
-          segments += `<div class="ppp-seg ppp-seg-me-pend" style="width:${toPct(myPendGpus)}%"></div>`;
+        const showProjects = document.getElementById('ppp-project-toggle')?.checked && _projectColors;
+        if (showMe && showProjects) {
+          const projMap = {};
+          for (const j of acctJobs) {
+            if (j.user !== currentUser) continue;
+            const proj = _getProjectFromJobName(j.job_name) || '_other';
+            if (!projMap[proj]) projMap[proj] = { run: 0, pend: 0 };
+            if (j.state === 'RUNNING') projMap[proj].run += (j.gpus || 0);
+            else projMap[proj].pend += (j.gpus || 0);
+          }
+          for (const [proj, pd] of Object.entries(projMap).sort((a, b) => (b[1].run + b[1].pend) - (a[1].run + a[1].pend))) {
+            const color = _getProjectColor(proj) || 'var(--accent)';
+            const runW = Math.min(pd.run, myTotal);
+            const pendW = Math.min(pd.pend, myTotal * 0.3);
+            if (runW > 0)
+              segments += `<div class="ppp-seg ppp-seg-proj" style="width:${toPct(runW)}%;background:${color}"></div>`;
+            if (pendW > 0)
+              segments += `<div class="ppp-seg ppp-seg-proj-pend" style="width:${toPct(pendW)}%;--proj-color:${color}"></div>`;
+          }
+        } else {
+          if (showMe && myRunGpus > 0)
+            segments += `<div class="ppp-seg ppp-seg-me-run" style="width:${toPct(myRunGpus)}%"></div>`;
+          if (showMe && myPendGpus > 0)
+            segments += `<div class="ppp-seg ppp-seg-me-pend" style="width:${toPct(myPendGpus)}%"></div>`;
+        }
         if (showTeamUsage && teamRunW > 0)
           segments += `<div class="ppp-seg ppp-seg-team-run" style="width:${toPct(teamRunW)}%"></div>`;
         if (showTeamUsage && teamPendW > 0)
@@ -1232,8 +1304,22 @@ function _renderPppAllocations(data) {
     });
 
     const hasAnySplit = !!_teamJobsData;
+    const showProjectsLegend = document.getElementById('ppp-project-toggle')?.checked && _projectColors;
     html += '<div class="ppp-overlay-legend">';
-    if (showMe) {
+    if (showMe && showProjectsLegend) {
+      const seenProjs = new Set();
+      const allJobs = _teamJobsData?.clusters?.[cn]?.jobs || [];
+      for (const j of allJobs) {
+        if (j.user !== currentUser) continue;
+        const p = _getProjectFromJobName(j.job_name);
+        if (p) seenProjs.add(p);
+      }
+      for (const p of seenProjs) {
+        const color = _getProjectColor(p) || 'var(--accent)';
+        html += `<span><span class="ppp-legend-swatch" style="background:${color}"></span>${p}</span>`;
+      }
+      if (!seenProjs.size) html += `<span><span class="ppp-legend-swatch swatch-me"></span>${currentUser}</span>`;
+    } else if (showMe) {
       html += `<span><span class="ppp-legend-swatch swatch-me"></span>${currentUser}${hasAnySplit ? ' run' : ''}</span>`;
       if (hasAnySplit) html += `<span><span class="ppp-legend-swatch swatch-me-pend"></span>${currentUser} pend</span>`;
     }
@@ -1246,8 +1332,6 @@ function _renderPppAllocations(data) {
     html += '</div>';
 
 
-    const bp = cd.best_priority;
-    const bc = cd.best_capacity;
     const clusterOccupied = cd.cluster_occupied_gpus || 0;
     const clusterTotal = cd.cluster_total_gpus || 0;
     const allPppsConsumed = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
@@ -1255,10 +1339,6 @@ function _renderPppAllocations(data) {
     const clusterPct = clusterTotal > 0 ? Math.round(clusterOccupied / clusterTotal * 100) : 0;
 
     html += `<div class="ppp-card-footer">
-      <div class="ppp-footer-recs">
-        ${bp ? `<span class="ppp-rec-badge ppp-rec-priority" title="Highest scheduling priority (level_fs ${bp.level_fs.toFixed(2)})">⚡ ${_shortAcct(bp.account)}</span>` : ''}
-        ${bc && (!bp || bc.account !== bp.account) ? `<span class="ppp-rec-badge ppp-rec-capacity" title="Most GPU headroom (${bc.headroom} free)">📦 ${_shortAcct(bc.account)}</span>` : ''}
-      </div>
       ${clusterTotal > 0 ? `<span class="ppp-cluster-occ" title="Cluster-wide: ${clusterOccupied} / ${clusterTotal} GPUs (our PPPs: ${allPppsConsumed}, others: ${clusterOthers})">${clusterPct}% cluster load</span>` : ''}
     </div></div>`;
   }
@@ -1411,6 +1491,28 @@ function _renderHistoryChart(data) {
 
 let _pppOverlayData = null;
 let _myFairshareData = null;
+let _projectColors = null;
+
+async function _fetchProjectColors() {
+  if (_projectColors) return;
+  try {
+    const res = await fetch('/api/settings');
+    const data = await res.json();
+    if (data.projects) _projectColors = data.projects;
+  } catch (_) {}
+}
+
+function _getProjectFromJobName(name) {
+  if (!name) return '';
+  const m = name.match(/^([a-zA-Z][a-zA-Z0-9-]*)_/);
+  return m ? m[1].toLowerCase() : '';
+}
+
+function _getProjectColor(proj) {
+  if (!proj || !_projectColors) return null;
+  const cfg = _projectColors[proj];
+  return cfg?.color || null;
+}
 let _pppOverlayFetching = false;
 
 async function _ensureOverlayData() {
@@ -1580,21 +1682,22 @@ function _populateAccountSelect() {
 
 async function initClustersPage() {
   refreshPppAllocations().then(() => _populateAccountSelect());
-  refreshTeamJobs();
   refreshUsageHistory();
 }
 
 /* ── Team Jobs ── */
 
-async function refreshTeamJobs() {
+async function _fetchTeamJobs() {
   try {
     const res = await fetch('/api/team_jobs');
     const data = await res.json();
-    if (data.status === 'ok') {
-      _teamJobsData = data;
-      if (_pppAllocData) _renderPppAllocations(_pppAllocData);
-    }
+    if (data.status === 'ok') _teamJobsData = data;
   } catch (_) {}
+}
+
+async function refreshTeamJobs() {
+  await _fetchTeamJobs();
+  if (_pppAllocData) _renderPppAllocations(_pppAllocData);
 }
 
 function _renderTeamJobs(clusters) {
