@@ -27,8 +27,7 @@ function _activateView(tab) {
   if (tab === 'logbook') initLogbookPage();
   if (tab === 'clusters') {
     if (_partitionData) _renderAvailTable();
-    showTeamGpuCached();
-    refreshTeamGpuStatus(true);
+    initClustersPage();
   }
 }
 
@@ -37,7 +36,7 @@ function showTab(tab) {
   const at = _appTabs.find(t => t.id === _activeTabId);
   if (at) {
     at.type = tab;
-    at.label = { live: 'Live', history: 'History', logbook: 'Logbook', clusters: 'Clusters' }[tab] || tab;
+    at.label = { live: 'Live', history: 'History', logbook: 'Logbook', clusters: 'Compute' }[tab] || tab;
     at.project = null;
     if (tab === 'logbook' && typeof _lbProject !== 'undefined' && _lbProject) {
       at.lbProject = _lbProject;
@@ -350,8 +349,12 @@ function renderCard(name, data) {
   if (isEmpty) cardClass += ' is-empty';
 
   const statusClass = isErr ? 'error' : 'ok';
-  const jobCountText = isErr ? 'unreachable' : `${jobs.length} job${jobs.length !== 1 ? 's' : ''}`;
-  const utilBar = utilBarHtml(name);
+  const runCount = jobs.filter(j => (j.state || '').toUpperCase() === 'RUNNING' || (j.state || '').toUpperCase() === 'COMPLETING').length;
+  const pendCount = jobs.filter(j => (j.state || '').toUpperCase() === 'PENDING').length;
+  const jobParts = [];
+  if (runCount) jobParts.push(`${runCount} running`);
+  if (pendCount) jobParts.push(`${pendCount} pending`);
+  const jobCountText = isErr ? 'unreachable' : (jobParts.length ? jobParts.join(' · ') : 'no jobs');
 
   const updated = data.updated ? new Date(data.updated).toLocaleTimeString() : '';
   const mount = data.mount || { mounted: false };
@@ -526,8 +529,7 @@ function renderCard(name, data) {
       <div class="card-title">
         <span class="card-name">${name}</span>
         <span class="badge">${info.gpu_type}</span>
-        ${hasRunning ? '<span class="badge badge-accent">● active</span>' : ''}
-        ${utilBar}${partitionChipHtml(name)}${quotaBadgesHtml(name)}
+        ${quotaBadgesHtml(name)}
       </div>
       <div class="card-meta">
         <span class="status-indicator ${statusClass}"></span>

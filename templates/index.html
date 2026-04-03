@@ -35,7 +35,7 @@
       <button class="nav-tab active" id="tab-live" onclick="navClick(event,'live','Live')"><span class="nav-tab-icon">⚡</span> Live</button>
       <button class="nav-tab" id="tab-history" onclick="navClick(event,'history','History')"><span class="nav-tab-icon">📋</span> History</button>
       <button class="nav-tab" id="tab-logbook" onclick="navClick(event,'logbook','Logbook')"><span class="nav-tab-icon">📓</span> Logbook</button>
-      <button class="nav-tab" id="tab-clusters" onclick="navClick(event,'clusters','Clusters')"><span class="nav-tab-icon">🖥</span> Clusters</button>
+      <button class="nav-tab" id="tab-clusters" onclick="navClick(event,'clusters','Compute')"><span class="nav-tab-icon">🖥</span> Compute</button>
     </div>
     <div class="nav-section">
       <div class="nav-section-label">Projects</div>
@@ -171,53 +171,59 @@
     <div class="clusters-view" id="clusters-view">
       <main>
         <div class="clusters-page">
+
+          <!-- Section 1: PPP Allocation Dashboard -->
           <div class="clusters-section">
             <div class="clusters-section-head">
               <div>
-                <div class="clusters-section-title">Submit Advisor</div>
-                <div class="clusters-section-sub">Find the best cluster and partition for your job</div>
+                <div class="clusters-section-title">GPU Allocations</div>
+                <div class="clusters-section-sub">Formal PPP allocations, consumption, and fairshare across clusters</div>
+              </div>
+              <button class="btn" onclick="refreshPppAllocations()">↻ refresh</button>
+              <div class="ppp-controls" style="margin-left:auto">
+                <label class="ppp-toggle" title="Highlight your GPU usage in each bar">
+                  <input type="checkbox" id="ppp-my-toggle" checked onchange="togglePppOverlays()">
+                  <span>My usage</span>
+                </label>
+                <label class="ppp-toggle" title="Highlight your team's GPU usage in each bar">
+                  <input type="checkbox" id="ppp-team-usage-toggle" checked onchange="togglePppOverlays()">
+                  <span>Team usage</span>
+                </label>
+                <label class="ppp-toggle" title="Scale bars relative to team allocation for easier comparison">
+                  <input type="checkbox" id="ppp-scale-toggle" checked onchange="toggleTeamOverlay()">
+                  <span>Team scale</span>
+                </label>
               </div>
             </div>
-            <div class="advisor-form">
-              <label class="adv-field"><span>Nodes</span><input type="number" id="adv-nodes" value="1" min="1" max="1024"></label>
-              <label class="adv-field"><span>Time limit</span><input type="text" id="adv-time" value="4:00:00" placeholder="HH:MM:SS"></label>
-              <label class="adv-field"><span>Cluster (optional)</span>
-                <select id="adv-cluster">
+            <div id="ppp-alloc-body">
+              <div class="no-jobs">Loading allocation data...</div>
+            </div>
+          </div>
+
+          <!-- Section 2: GPU Usage History -->
+          <div class="clusters-section" style="margin-top:24px">
+            <div class="clusters-section-head">
+              <div>
+                <div class="clusters-section-title">GPU Usage History</div>
+                <div class="clusters-section-sub">Allocation vs consumption over time</div>
+              </div>
+              <div class="history-controls">
+                <select id="history-cluster" onchange="refreshUsageHistory()">
                   <option value="">All clusters</option>
                   {% for name in clusters %}{% if name != 'local' %}<option value="{{ name }}">{{ name }}</option>{% endif %}{% endfor %}
                 </select>
-              </label>
-              <label class="adv-field adv-toggle"><input type="checkbox" id="adv-preempt"><span>Include preemptable (backfill)</span></label>
-              <button class="btn advisor-go-btn" onclick="runAdvisor()">Recommend</button>
-            </div>
-            <div class="advisor-results" id="adv-results">
-              <div class="no-jobs">Click "Recommend" to get suggestions</div>
-            </div>
-          </div>
-          <div class="clusters-section" style="margin-top:24px">
-            <div class="clusters-section-head">
-              <div>
-                <div class="clusters-section-title">Team GPU Status</div>
-                <div class="clusters-section-sub">Your team's GPU usage vs weekly allocations across clusters</div>
+                <div class="history-range-btns">
+                  <button class="btn btn-sm" onclick="setHistoryDays(7)" data-days="7">7d</button>
+                  <button class="btn btn-sm active" onclick="setHistoryDays(14)" data-days="14">14d</button>
+                  <button class="btn btn-sm" onclick="setHistoryDays(30)" data-days="30">30d</button>
+                </div>
               </div>
-              <button class="btn" onclick="refreshTeamGpuStatus()" style="margin-left:auto">↻ refresh</button>
             </div>
-            <div id="team-gpu-body">
-              <div class="no-jobs">Loading team GPU data...</div>
-            </div>
-          </div>
-          <div class="clusters-section" style="margin-top:24px">
-            <div class="clusters-section-head">
-              <div>
-                <div class="clusters-section-title">Cluster Availability</div>
-                <div class="clusters-section-sub">Partition wait times and idle GPUs across all clusters</div>
-              </div>
-              <button class="btn" onclick="refreshClusterAvailability()" style="margin-left:auto">↻ refresh</button>
-            </div>
-            <div id="avail-body">
-              <div class="no-jobs">Click refresh to load partition data</div>
+            <div id="history-chart-wrap" class="history-chart-wrap">
+              <canvas id="history-chart"></canvas>
             </div>
           </div>
+
         </div>
       </main>
     </div>

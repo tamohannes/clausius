@@ -398,21 +398,18 @@ def recommend_submission(
     gpu_type: str = "",
     clusters: Optional[list[str]] = None,
 ) -> dict:
-    """Recommend the best cluster and partition for a job submission.
+    """Recommend the best cluster, partition, and PPP account for a job.
 
-    BETA: Wait time estimates and rankings are heuristic-based and may
-    be inaccurate. They do not account for per-user QOS limits, fair-share
-    priority, or reservation policies. Treat as rough guidance.
+    Uses real-time partition data (queue depth, idle nodes, priority tiers,
+    occupancy) combined with AI Hub fairshare data to rank all eligible
+    (cluster, partition) pairs. Each recommendation includes the PPP account
+    with the best scheduling priority (highest level_fs).
 
-    Analyses real-time partition data (queue depth, idle nodes, priority
-    tiers, occupancy, drained nodes) across all clusters and returns a
-    ranked list of (cluster, partition) pairs with estimated wait times.
-
-    Wait estimates use the same heuristic as get_partition_summary() and
-    the Cluster Availability popup in the UI.
-
-    Use this when the user asks "where should I submit this job?" or
-    "which cluster has the shortest queue?"
+    Key fairshare fields in each recommendation:
+    - recommended_account: which PPP to submit under
+    - level_fs: fairshare level (>1.0 = scheduling credit, <1.0 = overdrawn)
+    - fairshare_avail_gpus: effective GPU availability for that account
+    - allocation_headroom: fairshare_avail - consumed
 
     Args:
         nodes:       Number of GPU nodes needed (default 1).
@@ -423,9 +420,8 @@ def recommend_submission(
         clusters:    List of cluster names to consider (optional).
 
     Returns:
-        Ranked recommendations with score, estimated wait, and details
-        including gpus_per_node and other_nodes (drained).
-        Lower score = better. Top recommendation is the best pick.
+        Ranked recommendations with score, estimated wait, fairshare data,
+        and recommended account. Lower score = better.
     """
     payload = {
         "nodes": nodes,
@@ -983,7 +979,50 @@ def get_team_gpu_status(cluster: Optional[str] = None) -> dict:
             "users": tu.get("users", {}),
         }
 
+    ppp = _api_get("/api/aihub/allocations")
+    if isinstance(ppp, dict) and ppp.get("status") == "ok":
+        for c in clusters_out:
+            ppp_cluster = ppp.get("clusters", {}).get(c, {})
+            if ppp_cluster:
+                clusters_out[c]["ppp_allocations"] = ppp_cluster.get("accounts", {})
+                bp = ppp_cluster.get("best_priority", {})
+                bc = ppp_cluster.get("best_capacity", {})
+                if bp:
+                    clusters_out[c]["best_priority_account"] = bp.get("account", "")
+                    clusters_out[c]["best_priority_level_fs"] = bp.get("level_fs", 0)
+                if bc:
+                    clusters_out[c]["best_capacity_account"] = bc.get("account", "")
+                    clusters_out[c]["best_capacity_headroom"] = bc.get("headroom", 0)
+
     return {"status": "ok", "clusters": clusters_out}
+
+
+@mcp.tool()
+def get_ppp_allocations(cluster: Optional[str] = None) -> dict:
+    """Get formal PPP GPU allocations from AI Hub across all clusters.
+
+    Returns real-time allocation, consumption, and fairshare data for each
+    PPP account (configured in ppp_accounts) on each cluster. This is the
+    authoritative source for GPU allocations — not the informal weekly
+    team numbers.
+
+    Key fields per account per cluster:
+    - gpus_allocated: formal allocation from the Slurm operator
+    - gpus_consumed: currently consuming (running jobs)
+    - fairshare_avail_gpus: effective availability after fairshare math
+    - level_fs: fairshare level (>1.0 = underutilizing, <1.0 = overdrawn)
+    - headroom: fairshare_avail - consumed (positive = room to grow)
+    - best_priority: account with highest scheduling priority (level_fs)
+    - best_capacity: account with most GPU headroom
+
+    Args:
+        cluster: Optional cluster name. If omitted, returns all clusters.
+
+    Returns:
+        {"status": "ok", "clusters": {"eos": {"accounts": {...}, "best_priority": {...}, ...}}}
+    """
+    params = f"?cluster={cluster}" if cluster else ""
+    return _api_get(f"/api/aihub/allocations{params}")
 
 
 @mcp.tool()

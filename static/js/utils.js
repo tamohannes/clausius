@@ -793,43 +793,10 @@ function _loadTeamCache() {
 }
 
 function showTeamGpuCached() {
-  const el = document.getElementById('team-gpu-body');
-  if (!el) return;
-  const hasCached = Object.keys(_teamUsageData).length > 0 || _loadTeamCache();
-  if (hasCached) {
-    _renderTeamGpuStatus(_teamUsageData, _teamGpuAlloc);
-  } else {
-    el.innerHTML = '<div class="no-jobs">Loading team GPU data...</div>';
-  }
+  _loadTeamCache();
 }
 
-async function refreshTeamGpuStatus(silent) {
-  const el = document.getElementById('team-gpu-body');
-  if (!el) return;
-  const t = silent ? null : toastLoading('Refreshing team GPU data…');
-
-  const clusters = Object.keys(CLUSTERS).filter(c => c !== 'local');
-  try {
-    const res = await fetch('/api/team_usage', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ clusters }),
-    });
-    const teamRes = await res.json();
-    const tu = teamRes.team_usage || {};
-    const allocs = teamRes.team_gpu_allocations || {};
-    for (const [c, d] of Object.entries(tu)) _teamUsageData[c] = d;
-    if (Object.keys(allocs).length) _teamGpuAlloc = allocs;
-    _renderTeamGpuStatus(tu, allocs);
-    _saveTeamCache();
-    if (t) t.done(`Team data refreshed (${Object.keys(tu).length} clusters)`);
-  } catch (e) {
-    if (!Object.keys(_teamUsageData).length) {
-      el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to load team GPU data</div>';
-    }
-    if (t) t.done('Failed to fetch team data', 'error');
-  }
-}
+async function refreshTeamGpuStatus(silent) {}
 
 async function refreshClusterAvailability() {
   const t = toastLoading('Fetching partition data…');
@@ -842,105 +809,726 @@ async function refreshClusterAvailability() {
   }
 }
 
-function _renderTeamGpuStatus(teamUsage, allocs) {
-  const el = document.getElementById('team-gpu-body');
+/* ── PPP Allocation Dashboard ── */
+
+let _pppAllocData = null;
+
+function _shortAcct(acct) {
+  const parts = acct.split('_');
+  return parts.length >= 3 ? parts.slice(2).join('-') : acct;
+}
+
+const _PPP_COLORS = ['ppp-c0', 'ppp-c1', 'ppp-c2'];
+
+async function refreshPppAllocations() {
+  const el = document.getElementById('ppp-alloc-body');
   if (!el) return;
+  const t = toastLoading('Loading GPU allocations…');
+  try {
+    const [allocRes] = await Promise.all([
+      fetch('/api/aihub/allocations'),
+      _ensureOverlayData(),
+    ]);
+    const data = await allocRes.json();
+    if (data.status === 'ok') {
+      _pppAllocData = data;
+      _renderPppAllocations(data);
+      t.done('Allocation data loaded');
+    } else {
+      el.innerHTML = `<div class="no-jobs" style="color:var(--red)">${data.error || 'Failed to load'}</div>`;
+      t.done('Failed', 'error');
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to connect to AI Hub</div>';
+    t.done('Failed to load allocation data', 'error');
+  }
+}
 
-  const clusters = Object.keys(CLUSTERS).filter(c => c !== 'local').sort();
-  const hasData = clusters.some(c => teamUsage[c] || allocs[c]);
+let _teamJobsData = null;
 
-  if (!hasData) {
-    el.innerHTML = '<div class="no-jobs">No team data yet. Set weekly GPU allocations in Settings > Profile, and wait for team usage to be fetched.</div>';
+function _getTeamRunningOnCluster(cn) {
+  if (!_pppOverlayData?.clusters?.[cn]) return 0;
+  const teamMembers = _pppOverlayData.team_members || [];
+  let total = 0;
+  for (const acctUsers of Object.values(_pppOverlayData.clusters[cn])) {
+    for (const m of teamMembers) total += (acctUsers[m] || 0);
+  }
+  return total;
+}
+
+function _getJobStats(cn) {
+  const cd = _teamJobsData?.clusters?.[cn];
+  if (!cd) return { myRunning: 0, myPending: 0, teamRunning: 0, teamPending: 0 };
+  const s = cd.summary || {};
+  const byUser = s.by_user || {};
+  const me = byUser[USERNAME] || {};
+  return {
+    myRunning: me.running || 0,
+    myPending: (me.pending || 0) + (me.dependent || 0),
+    teamRunning: s.total_running || 0,
+    teamPending: (s.total_pending || 0) + (s.total_dependent || 0),
+  };
+}
+
+function _clusterSubmitScore(cd, cn) {
+  const bc = cd.best_capacity || {};
+  const bp = cd.best_priority || {};
+  const pppHeadroom = bc.headroom || 0;
+  const levelFs = bp.level_fs || 0;
+
+  const teamAlloc = cd.team_gpu_alloc;
+  const teamNum = teamAlloc === 'any' ? null : (typeof teamAlloc === 'number' ? teamAlloc : null);
+  const teamRunning = _getTeamRunningOnCluster(cn);
+
+  let freeForTeam;
+  if (teamNum && teamNum > 0) {
+    freeForTeam = Math.min(pppHeadroom, Math.max(0, teamNum - teamRunning));
+  } else {
+    freeForTeam = pppHeadroom;
+  }
+
+  const jobs = _getJobStats(cn);
+
+  return { freeForTeam, pppHeadroom, teamRunning, teamNum, levelFs,
+           myRunning: jobs.myRunning, myPending: jobs.myPending,
+           teamPending: jobs.teamPending,
+           score: freeForTeam * Math.min(levelFs, 3) };
+}
+
+function _renderSubmitSummary(clusters) {
+  const ranked = Object.entries(clusters)
+    .map(([cn, cd]) => {
+      const bc = cd.best_capacity || {};
+      const bp = cd.best_priority || {};
+      const bestAcct = (bc.headroom || 0) > 50 ? (bc.account || '') : (bp.account || '');
+      const gpuType = cd.gpu_type || '';
+      const s = _clusterSubmitScore(cd, cn);
+      return { cn, gpuType, bestAcct, ...s };
+    })
+    .filter(c => c.freeForTeam > 0 || c.levelFs > 0.5)
+    .sort((a, b) => b.score - a.score);
+
+  if (!ranked.length) return '<div class="ws-strip"><span class="ws-none">No clusters with available headroom</span></div>';
+
+  return '<div class="ws-strip">' + ranked.map((c, i) => {
+    const cls = i === 0 ? 'ws-best' : c.freeForTeam > 50 ? 'ws-good' : 'ws-ok';
+    const acctShort = c.bestAcct ? _shortAcct(c.bestAcct) : '';
+    const teamLabel = c.teamNum ? ` / ${c.teamNum}` : '';
+    const tooltip = `Team free: ${c.freeForTeam} GPUs (using ${c.teamRunning}${teamLabel}), PPP headroom: ${c.pppHeadroom}, FS: ${c.levelFs.toFixed(1)}`;
+
+    const myR = c.myRunning || 0;
+    const myP = c.myPending || 0;
+    const teamR = c.teamRunning || 0;
+    const teamP = c.teamPending || 0;
+
+    return `<div class="ws-chip ${cls}" title="${tooltip}">
+      <span class="ws-cluster">${c.cn}</span>
+      ${c.gpuType ? `<span class="ws-gpu">${c.gpuType}</span>` : ''}
+      <span class="ws-headroom">${c.freeForTeam} free</span>
+      ${acctShort ? `<span class="ws-acct">via ${acctShort}</span>` : ''}
+      <div class="ws-usage-row">
+        <span class="ws-usage-me" title="You: ${myR} running, ${myP} pending">
+          <span class="ws-dot ws-dot-me-run"></span>${myR}
+          ${myP > 0 ? `<span class="ws-dot ws-dot-me-pend"></span>${myP}` : ''}
+        </span>
+        <span class="ws-usage-team" title="Team: ${teamR} running, ${teamP} pending">
+          <span class="ws-dot ws-dot-team-run"></span>${teamR}
+          ${teamP > 0 ? `<span class="ws-dot ws-dot-team-pend"></span>${teamP}` : ''}
+        </span>
+      </div>
+    </div>`;
+  }).join('') + '</div>';
+}
+
+function _renderPppAllocations(data) {
+  const el = document.getElementById('ppp-alloc-body');
+  if (!el) return;
+  const clusters = data.clusters || {};
+  const configOrder = Object.keys(CLUSTERS).filter(c => c !== 'local');
+  const names = Object.keys(clusters).sort((a, b) => {
+    const ai = configOrder.indexOf(a);
+    const bi = configOrder.indexOf(b);
+    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+  });
+  if (!names.length) {
+    el.innerHTML = '<div class="no-jobs">No allocation data available</div>';
     return;
   }
 
-  let html = '<div class="team-gpu-grid">';
-  for (const c of clusters) {
-    const tu = teamUsage[c] || {};
-    const rawAlloc = allocs[c];
-    let weekly = 0;
-    let isAny = false;
-    if (rawAlloc === 'any' || rawAlloc === -1) {
-      isAny = true;
-      const ps = _partitionData && _partitionData[c];
-      if (ps && ps.partitions) {
-        for (const p of ps.partitions) {
-          const g = (p.total_nodes || 0) * (p.gpus_per_node || 0);
-          if (g > weekly) weekly = g;
-        }
-      }
-    } else {
-      weekly = rawAlloc || 0;
-    }
-    const running = tu.total_running_gpus || 0;
-    const pending = tu.total_pending_gpus || 0;
-    const users = tu.users || {};
-    const gpuType = CLUSTERS[c]?.gpu_type || '';
+  let html = _renderSubmitSummary(clusters);
+  html += '<div class="ppp-grid">';
+  for (const cn of names) {
+    const cd = clusters[cn];
+    const accts = Object.entries(cd.accounts || {}).sort((a, b) => (b[1].gpus_allocated || 0) - (a[1].gpus_allocated || 0));
+    if (!accts.length) continue;
+    const rawMaxAlloc = Math.max(...accts.map(([, d]) => d.gpus_allocated || 1));
 
-    if (!weekly && !running && !pending && !Object.keys(users).length) continue;
+    const teamAlloc = cd.team_gpu_alloc;
+    const teamNum = teamAlloc === 'any' ? null : (typeof teamAlloc === 'number' ? teamAlloc : null);
+    const showTeamAlloc = true;
+    const showMe = document.getElementById('ppp-my-toggle')?.checked ?? false;
+    const showTeamUsage = document.getElementById('ppp-team-usage-toggle')?.checked ?? false;
+    const teamScale = document.getElementById('ppp-scale-toggle')?.checked ?? false;
 
-    const myDataCard = users[USERNAME] || {};
-    const myRunCard = myDataCard.running_gpus || 0;
-    const myUsagePct = weekly > 0 ? Math.min(100, Math.round(myRunCard / weekly * 100)) : 0;
-    const free = weekly > 0 ? Math.max(0, weekly - myRunCard) : null;
-    const level = myUsagePct >= 90 ? 'high' : myUsagePct >= 60 ? 'medium' : 'low';
-    const statusLabel = myUsagePct >= 100 ? 'over quota' : myUsagePct >= 70 ? 'near quota' : 'under quota';
-    const statusCls = myUsagePct >= 100 ? 'red' : myUsagePct >= 70 ? 'amber' : 'green';
 
-    html += `<div class="team-gpu-card">
-      <div class="team-gpu-card-head">
-        <span class="team-gpu-cluster">${c}</span>
-        ${gpuType ? `<span class="avail-gpu-badge">${gpuType}</span>` : ''}
-        ${weekly ? `<span class="team-gpu-status ${statusCls}">${statusLabel}</span>` : ''}
+    const maxAlloc = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : rawMaxAlloc;
+
+    html += `<div class="ppp-card">
+      <div class="ppp-card-head">
+        <span class="ppp-card-cluster">${cn}</span>
+        ${cd.gpu_type ? `<span class="ppp-card-gpu">${cd.gpu_type}</span>` : ''}
+        ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
       </div>`;
 
-    const myData = users[USERNAME] || {};
-    const myRun = myData.running_gpus || 0;
-    const myPend = myData.pending_gpus || 0;
-    const teamRest = Math.max(0, running - myRun);
-    const teamPend = Math.max(0, pending - myPend);
-    const cap = weekly || running || 1;
-    const myPct = Math.min(100, Math.round(myRun / cap * 100));
-    const teamPct = Math.min(100 - myPct, Math.round(teamRest / cap * 100));
+    const overlayCluster = _pppOverlayData?.clusters?.[cn] || {};
+    const currentUser = _pppOverlayData?.current_user || USERNAME;
+    const teamMembers = _pppOverlayData?.team_members || [];
 
-    html += `<div class="team-stacked-bar" style="margin:8px 0 6px">
-      <div class="team-stacked-track">
-        ${myPct > 0 ? `<div class="team-stacked-seg you" style="width:${myPct}%" title="You: ${myRun} GPUs"></div>` : ''}
-        ${teamPct > 0 ? `<div class="team-stacked-seg team" style="width:${teamPct}%" title="Others: ${teamRest} GPUs"></div>` : ''}
-      </div>
-    </div>
-    <div class="team-gpu-labels">
-      <div class="team-gpu-label-line"><span class="team-gpu-label-you">you: ${myRun}</span>${myPend > 0 ? ` <span class="team-pend-badge ${weekly > 0 && (myRun + myPend) > weekly ? 'over' : 'ok'}">+${myPend} pending</span>` : ''}</div>
-      <div class="team-gpu-label-line"><span class="team-gpu-label-team">others: ${teamRest}${teamPend > 0 ? ` (+${teamPend} pending)` : ''}</span></div>
-      ${free !== null && free > 0 ? `<div class="team-gpu-label-line"><span class="team-gpu-label-free">free: ${free}</span></div>` : ''}
-    </div>
-    <div class="team-gpu-summary">your usage: ${myRunCard} / ${weekly} GPUs${isAny ? ' (any)' : ''}</div>`;
+    const tjCluster = _teamJobsData?.clusters?.[cn]?.summary?.by_user || null;
+    const hasJobSplit = !!tjCluster;
 
-    const sorted = Object.entries(users)
-      .map(([u, d]) => ({ user: u, run: d.running_gpus || 0, pend: d.pending_gpus || 0 }))
-      .filter(x => x.run > 0 || x.pend > 0)
-      .sort((a, b) => b.run - a.run || b.pend - a.pend);
+    accts.forEach(([acct, ad], i) => {
+      const allocPct = Math.min(100, maxAlloc > 0 ? Math.round(ad.gpus_allocated / maxAlloc * 100) : 0);
+      const fsCls = ad.level_fs >= 1.2 ? 'ppp-fs-good' : ad.level_fs >= 0.8 ? 'ppp-fs-neutral' : 'ppp-fs-low';
+      const consumed = ad.gpus_consumed || 0;
+      const toPct = (gpus) => Math.round(gpus / maxAlloc * 100);
 
-    if (sorted.length) {
-      html += '<div class="team-gpu-users">';
-      for (const m of sorted.slice(0, 8)) {
-        const barPct = weekly > 0 ? Math.min(100, Math.round(m.run / weekly * 100)) : 0;
-        const barLevel = barPct >= 50 ? 'high' : barPct >= 20 ? 'medium' : 'low';
-        const isMe = m.user === USERNAME;
-        const parts = [];
-        if (m.run > 0) parts.push(`${m.run} running`);
-        if (m.pend > 0) parts.push(`${m.pend} pending`);
-        html += `<div class="team-gpu-user-row">
-          <span class="team-gpu-user-name${isMe ? ' me' : ''}">${m.user}</span>
-          <span class="tt-team-bar-wrap"><span class="tt-team-bar ${barLevel}" style="width:${barPct}%"></span></span>
-          <span class="team-gpu-user-val">${parts.join(', ')}</span>
-        </div>`;
+      let teamAllocMarker = '';
+      if (showTeamAlloc && teamNum) {
+        const markerPct = Math.min(98, Math.round(teamNum / maxAlloc * 100));
+        teamAllocMarker = `<div class="ppp-team-marker" style="left:${markerPct}%"></div>`;
       }
-      if (sorted.length > 8) {
-        html += `<div class="team-gpu-user-val" style="text-align:center">+${sorted.length - 8} more</div>`;
+
+      const acctUsers = overlayCluster[acct] || {};
+      const acctShortName = _shortAcct(acct);
+      let myTotal = acctUsers[currentUser] || 0;
+      let teamOthersTotal = 0;
+      if (teamMembers.length) {
+        for (const m of teamMembers) {
+          if (m !== currentUser) teamOthersTotal += (acctUsers[m] || 0);
+        }
       }
-      html += '</div>';
+      myTotal = Math.min(myTotal, consumed);
+      teamOthersTotal = Math.min(teamOthersTotal, consumed - myTotal);
+      const pppNonTeam = Math.max(0, consumed - myTotal - teamOthersTotal);
+
+      const clusterOccupied = cd.cluster_occupied_gpus || 0;
+      const allPppsConsumed = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
+      const clusterOthers = Math.max(0, clusterOccupied - allPppsConsumed);
+
+      const acctJobs = hasJobSplit ? (_teamJobsData?.clusters?.[cn]?.jobs || []).filter(j => j.account === acct) : [];
+      let segments = '';
+      if (hasJobSplit) {
+        let myRunning = 0, myPending = 0, teamRunGpus = 0, teamPendGpus = 0;
+        for (const j of acctJobs) {
+          const g = j.gpus || 0;
+          if (j.user === currentUser) {
+            if (j.state === 'RUNNING') myRunning += g; else myPending += g;
+          } else if (teamMembers.includes(j.user)) {
+            if (j.state === 'RUNNING') teamRunGpus += g; else teamPendGpus += g;
+          }
+        }
+        const myRunGpus = Math.min(myRunning, myTotal);
+        const myPendGpus = Math.min(myPending, myTotal * 0.3);
+
+        const teamRunW = Math.min(teamRunGpus, teamOthersTotal);
+        const teamPendW = Math.min(teamPendGpus, teamOthersTotal * 0.3);
+
+        if (showMe && myRunGpus > 0)
+          segments += `<div class="ppp-seg ppp-seg-me-run" style="width:${toPct(myRunGpus)}%"></div>`;
+        if (showMe && myPendGpus > 0)
+          segments += `<div class="ppp-seg ppp-seg-me-pend" style="width:${toPct(myPendGpus)}%"></div>`;
+        if (showTeamUsage && teamRunW > 0)
+          segments += `<div class="ppp-seg ppp-seg-team-run" style="width:${toPct(teamRunW)}%"></div>`;
+        if (showTeamUsage && teamPendW > 0)
+          segments += `<div class="ppp-seg ppp-seg-team-pend" style="width:${toPct(teamPendW)}%"></div>`;
+      } else {
+        if (showMe && myTotal > 0)
+          segments += `<div class="ppp-seg ppp-seg-me-run" style="width:${toPct(myTotal)}%"></div>`;
+        if (showTeamUsage && teamOthersTotal > 0)
+          segments += `<div class="ppp-seg ppp-seg-team-run" style="width:${toPct(teamOthersTotal)}%"></div>`;
+      }
+      if (pppNonTeam > 0)
+        segments += `<div class="ppp-seg ppp-seg-ppp-rest" style="width:${toPct(pppNonTeam)}%"></div>`;
+
+      const clusterOcc = cd.cluster_occupied_gpus || 0;
+      const clusterTot = cd.cluster_total_gpus || 0;
+      const allPpps = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
+      const nonPpps = Math.max(0, clusterOcc - allPpps);
+
+      const teamAllocLabel = teamNum ? `${teamNum} GPUs` : (teamAlloc === 'any' ? 'unlimited' : '');
+
+      let myPopLabel, teamPopLabel;
+      if (hasJobSplit) {
+        const myR = acctJobs.filter(j => j.user === currentUser && j.state === 'RUNNING').reduce((s, j) => s + (j.gpus || 0), 0);
+        const myP = acctJobs.filter(j => j.user === currentUser && j.state !== 'RUNNING').reduce((s, j) => s + (j.gpus || 0), 0);
+        myPopLabel = myR > 0 || myP > 0 ? `${myR} run` : `${myTotal}`;
+        if (myP > 0) myPopLabel += ` · ${myP} pend`;
+        let tR = 0, tP = 0;
+        for (const j of acctJobs) {
+          if (j.user === currentUser) continue;
+          if (!teamMembers.includes(j.user)) continue;
+          if (j.state === 'RUNNING') tR += (j.gpus || 0); else tP += (j.gpus || 0);
+        }
+        teamPopLabel = tR > 0 || tP > 0 ? `${tR} run` : `${teamOthersTotal}`;
+        if (tP > 0) teamPopLabel += ` · ${tP} pend`;
+      } else {
+        myPopLabel = `${myTotal}`;
+        teamPopLabel = `${teamOthersTotal}`;
+      }
+
+      const popupRows = [
+        { label: currentUser, value: myPopLabel, detail: '', cls: 'pop-me' },
+        { label: 'team', value: teamPopLabel, detail: '', cls: 'pop-team' },
+        ...(teamAllocLabel ? [{ label: 'team alloc', value: teamAllocLabel, detail: 'informal', cls: 'pop-team-alloc' }] : []),
+        { label: `${acctShortName} non-team`, value: `${pppNonTeam}`, detail: '', cls: 'pop-ppp' },
+        { label: 'other PPPs', value: `${nonPpps}`, detail: '', cls: 'pop-other' },
+        { label: 'cluster total', value: `${clusterOcc} / ${clusterTot}`, detail: clusterTot > 0 ? `${Math.round(clusterOcc/clusterTot*100)}%` : '', cls: 'pop-cluster' },
+      ];
+      const popupHtml = popupRows.map(r =>
+        `<div class="ppp-pop-row ${r.cls}"><span class="ppp-pop-label">${r.label}</span><span class="ppp-pop-val">${r.value}</span>${r.detail ? `<span class="ppp-pop-detail">${r.detail}</span>` : ''}</div>`
+      ).join('');
+
+      html += `<div class="ppp-acct-row">
+        <span class="ppp-acct-name" title="${acct}">${_shortAcct(acct)}</span>
+        <div class="ppp-bar-outer ppp-bar-hoverable" onclick="openUserBreakdown('${cn}','${acct}')">
+          <div class="ppp-bar-wrap">
+            ${segments}
+          </div>
+          ${teamAllocMarker}
+          <div class="ppp-popup">${popupHtml}</div>
+        </div>
+        <span class="ppp-acct-nums"><strong>${consumed}</strong> / ${ad.gpus_allocated}</span>
+        <span class="ppp-fs-indicator ${fsCls}" title="FS ${ad.level_fs.toFixed(2)}">${ad.level_fs.toFixed(1)}</span>
+      </div>`;
+    });
+
+    const hasAnySplit = !!_teamJobsData;
+    html += '<div class="ppp-overlay-legend">';
+    if (showMe) {
+      html += `<span><span class="ppp-legend-swatch swatch-me"></span>${currentUser}${hasAnySplit ? ' run' : ''}</span>`;
+      if (hasAnySplit) html += `<span><span class="ppp-legend-swatch swatch-me-pend"></span>${currentUser} pend</span>`;
     }
+    if (showTeamUsage) {
+      const tn = _pppOverlayData?.team_name || 'team';
+      html += `<span><span class="ppp-legend-swatch swatch-team"></span>${tn}${hasAnySplit ? ' run' : ''}</span>`;
+      if (hasAnySplit) html += `<span><span class="ppp-legend-swatch swatch-team-pend"></span>${tn} pend</span>`;
+    }
+    html += `<span><span class="ppp-legend-swatch swatch-ppp-rest"></span>PPP non-team</span>`;
+    html += '</div>';
+
+
+    const bp = cd.best_priority;
+    const bc = cd.best_capacity;
+    const clusterOccupied = cd.cluster_occupied_gpus || 0;
+    const clusterTotal = cd.cluster_total_gpus || 0;
+    const allPppsConsumed = accts.reduce((s, [, a]) => s + (a.gpus_consumed || 0), 0);
+    const clusterOthers = Math.max(0, clusterOccupied - allPppsConsumed);
+    const clusterPct = clusterTotal > 0 ? Math.round(clusterOccupied / clusterTotal * 100) : 0;
+
+    html += `<div class="ppp-card-footer">
+      <div class="ppp-footer-recs">
+        ${bp ? `<span class="ppp-rec-badge ppp-rec-priority" title="Highest scheduling priority (level_fs ${bp.level_fs.toFixed(2)})">⚡ ${_shortAcct(bp.account)}</span>` : ''}
+        ${bc && (!bp || bc.account !== bp.account) ? `<span class="ppp-rec-badge ppp-rec-capacity" title="Most GPU headroom (${bc.headroom} free)">📦 ${_shortAcct(bc.account)}</span>` : ''}
+      </div>
+      ${clusterTotal > 0 ? `<span class="ppp-cluster-occ" title="Cluster-wide: ${clusterOccupied} / ${clusterTotal} GPUs (our PPPs: ${allPppsConsumed}, others: ${clusterOthers})">${clusterPct}% cluster load</span>` : ''}
+    </div></div>`;
+  }
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+/* ── GPU Usage History Chart ── */
+
+let _historyChart = null;
+let _historyDays = 14;
+
+function setHistoryDays(d) {
+  _historyDays = d;
+  document.querySelectorAll('.history-range-btns .btn-sm').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.days) === d);
+  });
+  refreshUsageHistory();
+}
+
+async function refreshUsageHistory() {
+  const cluster = document.getElementById('history-cluster')?.value || '';
+  const params = new URLSearchParams({ days: _historyDays });
+  if (cluster) params.set('cluster', cluster);
+
+  try {
+    const res = await fetch('/api/aihub/history?' + params);
+    const data = await res.json();
+    if (data.status === 'ok') _renderHistoryChart(data);
+  } catch (_) {}
+}
+
+const _CHART_COLORS = {
+  'reasoning': { line: '#558B2F', fill: 'rgba(85,139,47,0.12)', dash: '#558B2F' },
+  'robustness': { line: '#A4D65E', fill: 'rgba(164,214,94,0.12)', dash: '#A4D65E' },
+  'long-context': { line: '#7CB342', fill: 'rgba(124,179,66,0.12)', dash: '#7CB342' },
+};
+
+function _chartColor(acct) {
+  const short = _shortAcct(acct);
+  return _CHART_COLORS[short] || { line: '#888', fill: 'rgba(136,136,136,0.1)', dash: '#888' };
+}
+
+function _renderHistoryChart(data) {
+  const canvas = document.getElementById('history-chart');
+  if (!canvas) return;
+
+  if (_historyChart) {
+    _historyChart.destroy();
+    _historyChart = null;
+  }
+
+  const allClusters = data.clusters || {};
+  const clusterNames = Object.keys(allClusters);
+  if (!clusterNames.length) return;
+
+  const merged = {};
+  for (const [cn, series] of Object.entries(allClusters)) {
+    for (const [acct, points] of Object.entries(series)) {
+      const label = clusterNames.length > 1 ? `${_shortAcct(acct)} (${cn})` : _shortAcct(acct);
+      merged[label] = { acct, points };
+    }
+  }
+
+  const allDates = new Set();
+  for (const { points } of Object.values(merged)) {
+    for (const p of points) allDates.add(p.date);
+  }
+  const labels = [...allDates].sort();
+
+  const datasets = [];
+  for (const [label, { acct, points }] of Object.entries(merged)) {
+    const colors = _chartColor(acct);
+    const dateMap = {};
+    for (const p of points) dateMap[p.date] = p;
+
+    datasets.push({
+      label: label + ' (consumed)',
+      data: labels.map(d => dateMap[d]?.gpus_consumed ?? null),
+      borderColor: colors.line,
+      backgroundColor: colors.fill,
+      fill: true,
+      tension: 0.3,
+      pointRadius: 2,
+      pointHoverRadius: 5,
+      borderWidth: 2,
+    });
+
+    datasets.push({
+      label: label + ' (allocated)',
+      data: labels.map(d => dateMap[d]?.gpus_allocated ?? null),
+      borderColor: colors.dash,
+      borderDash: [6, 3],
+      fill: false,
+      tension: 0,
+      pointRadius: 0,
+      borderWidth: 1.5,
+    });
+  }
+
+  const ctx = canvas.getContext('2d');
+  _historyChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: {
+          position: 'bottom',
+          labels: {
+            font: { family: "'JetBrains Mono', monospace", size: 10 },
+            boxWidth: 16,
+            padding: 12,
+            filter: item => item.text.includes('consumed'),
+          },
+        },
+        tooltip: {
+          titleFont: { family: "'JetBrains Mono', monospace", size: 11 },
+          bodyFont: { family: "'JetBrains Mono', monospace", size: 10 },
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y ?? '—'} GPUs`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: {
+            font: { family: "'JetBrains Mono', monospace", size: 9 },
+            maxRotation: 0,
+            callback: (val, i) => {
+              const d = labels[i];
+              return d ? d.slice(5) : '';
+            },
+          },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: 'rgba(128,128,128,0.1)' },
+          ticks: {
+            font: { family: "'JetBrains Mono', monospace", size: 9 },
+          },
+        },
+      },
+    },
+  });
+}
+
+let _pppOverlayData = null;
+let _pppOverlayFetching = false;
+
+async function _ensureOverlayData() {
+  if (_pppOverlayData || _pppOverlayFetching) return _pppOverlayData;
+  _pppOverlayFetching = true;
+  try {
+    const res = await fetch('/api/aihub/team_overlay');
+    const data = await res.json();
+    if (data.status === 'ok') _pppOverlayData = data;
+  } catch (_) {}
+  _pppOverlayFetching = false;
+  return _pppOverlayData;
+}
+
+async function togglePppOverlays() {
+  const showMe = document.getElementById('ppp-my-toggle')?.checked;
+  const showTeamUsage = document.getElementById('ppp-team-usage-toggle')?.checked;
+  if ((showMe || showTeamUsage) && !_pppOverlayData) {
+    await _ensureOverlayData();
+  }
+  if (_pppAllocData) _renderPppAllocations(_pppAllocData);
+}
+
+function toggleTeamOverlay() {
+  if (_pppAllocData) _renderPppAllocations(_pppAllocData);
+}
+
+async function openUserBreakdown(cluster, account) {
+  const acctShort = _shortAcct(account);
+  const gpuType = CLUSTERS[cluster]?.gpu_type || '';
+  const teamMembers = new Set(_pppOverlayData?.team_members || []);
+
+  let overlay = document.getElementById('user-breakdown-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'user-breakdown-overlay';
+    overlay.className = 'ub-overlay';
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.classList.remove('open'); };
+    document.body.appendChild(overlay);
+  }
+
+  overlay.innerHTML = `<div class="ub-modal">
+    <div class="ub-head">
+      <div>
+        <div class="ub-title">${cluster} / ${acctShort}</div>
+        <div class="ub-sub">${gpuType ? gpuType + ' — ' : ''}Per-user GPU breakdown</div>
+      </div>
+      <button class="btn" onclick="document.getElementById('user-breakdown-overlay').classList.remove('open')">✕</button>
+    </div>
+    <div class="ub-body"><div class="no-jobs">Loading user data...</div></div>
+  </div>`;
+  overlay.classList.add('open');
+
+  try {
+    const res = await fetch(`/api/aihub/users?account=${encodeURIComponent(account)}&cluster=${cluster}&days=3`);
+    const data = await res.json();
+    if (data.status !== 'ok' || !data.users?.length) {
+      overlay.querySelector('.ub-body').innerHTML = '<div class="no-jobs">No user data available</div>';
+      return;
+    }
+
+    const allJobs = _teamJobsData?.clusters?.[cluster]?.jobs || [];
+    const acctJobsByUser = {};
+    for (const j of allJobs) {
+      if (j.account !== account) continue;
+      if (!acctJobsByUser[j.user]) acctJobsByUser[j.user] = { running: 0, pending: 0, cpu_running: 0, cpu_pending: 0 };
+      const d = acctJobsByUser[j.user];
+      if (j.is_gpu === false) {
+        if (j.state === 'RUNNING') d.cpu_running += (j.nodes || 1);
+        else d.cpu_pending += (j.nodes || 1);
+      } else {
+        if (j.state === 'RUNNING') d.running += (j.gpus || 0);
+        else d.pending += (j.gpus || 0);
+      }
+    }
+    const allocData = _pppAllocData?.clusters?.[cluster]?.accounts?.[account] || {};
+    const totalConsumed = allocData.gpus_consumed || 0;
+    const totalAllocated = allocData.gpus_allocated || 0;
+    const maxUser = data.users[0]?.avg_gpus_consumed || 1;
+
+    const activeUsers = data.users.filter(u => {
+      const tj = acctJobsByUser[u.user] || {};
+      return (tj.running || 0) > 0 || (tj.pending || 0) > 0 || (tj.cpu_running || 0) > 0 || (tj.cpu_pending || 0) > 0;
+    });
+    const inactiveUsers = data.users.filter(u => {
+      const tj = acctJobsByUser[u.user] || {};
+      return !((tj.running || 0) > 0 || (tj.pending || 0) > 0 || (tj.cpu_running || 0) > 0 || (tj.cpu_pending || 0) > 0);
+    });
+
+    const renderUser = (u) => {
+      const isMe = u.user === USERNAME;
+      const isTeam = teamMembers.has(u.user);
+      const tj = acctJobsByUser[u.user] || {};
+      const running = tj.running || 0;
+      const pending = tj.pending || 0;
+      const cpuR = tj.cpu_running || 0;
+      const cpuP = tj.cpu_pending || 0;
+      const hasLive = running > 0 || pending > 0 || cpuR > 0 || cpuP > 0;
+      const barPct = Math.round(u.avg_gpus_consumed / maxUser * 100);
+
+      let statParts = [];
+      if (hasLive) {
+        if (running > 0) statParts.push(`<span class="ub-live-run">${running} run</span>`);
+        if (pending > 0) statParts.push(`<span class="ub-live-pend">${pending} pend</span>`);
+        if (cpuR > 0 || cpuP > 0) statParts.push(`<span class="ub-live-cpu">${cpuR + cpuP} cpu</span>`);
+      } else {
+        statParts.push(`<span class="ub-live-avg">${Math.round(u.avg_gpus_consumed)} avg</span>`);
+      }
+
+      return `<div class="ub-user-row${isMe ? ' ub-me' : ''}">
+        <span class="ub-user-name${isMe ? ' ub-name-me' : isTeam ? ' ub-name-team' : ''}">${u.user}</span>
+        <span class="ub-bar-wrap"><span class="ub-bar ${isMe ? 'ub-bar-me' : isTeam ? 'ub-bar-team' : 'ub-bar-other'}" style="width:${barPct}%"></span></span>
+        <span class="ub-stats">${statParts.join('<span class="ub-sep">·</span>')}</span>
+      </div>`;
+    };
+
+    let rows = activeUsers.map(renderUser).join('');
+    if (inactiveUsers.length) {
+      rows += `<div class="ub-divider"><span>recent (no active jobs)</span></div>`;
+      rows += inactiveUsers.map(renderUser).join('');
+    }
+
+    const header = `<div class="ub-summary">
+      <span>Total: <strong>${totalConsumed}</strong> / ${totalAllocated} GPUs</span>
+      <span>${data.users.length} users</span>
+    </div>`;
+
+    overlay.querySelector('.ub-body').innerHTML = header + '<div class="ub-users">' + rows + '</div>';
+  } catch (e) {
+    overlay.querySelector('.ub-body').innerHTML = '<div class="no-jobs" style="color:var(--red)">Failed to load</div>';
+  }
+}
+
+/* ── Clusters page init ── */
+
+let _clustersPageInited = false;
+
+function _populateAccountSelect() {
+  const sel = document.getElementById('adv-account');
+  if (!sel) return;
+  if (sel.options.length > 1) return;
+  try {
+    const settingsEl = document.getElementById('cluster-data');
+    const pppEl = document.querySelector('script[id="cluster-data"]');
+  } catch (_) {}
+  if (_pppAllocData && _pppAllocData.clusters) {
+    const seen = new Set();
+    for (const cd of Object.values(_pppAllocData.clusters)) {
+      for (const acct of Object.keys(cd.accounts || {})) seen.add(acct);
+    }
+    for (const acct of seen) {
+      const opt = document.createElement('option');
+      opt.value = acct;
+      opt.textContent = _shortAcct(acct);
+      sel.appendChild(opt);
+    }
+  }
+}
+
+async function initClustersPage() {
+  _ensureOverlayData();
+  refreshPppAllocations().then(() => _populateAccountSelect());
+  refreshTeamJobs();
+  refreshUsageHistory();
+}
+
+/* ── Team Jobs ── */
+
+async function refreshTeamJobs() {
+  try {
+    const res = await fetch('/api/team_jobs');
+    const data = await res.json();
+    if (data.status === 'ok') {
+      _teamJobsData = data;
+      if (_pppAllocData) _renderPppAllocations(_pppAllocData);
+    }
+  } catch (_) {}
+}
+
+function _renderTeamJobs(clusters) {
+  const el = document.getElementById('team-jobs-body');
+  if (!el) return;
+
+  const clusterNames = Object.keys(clusters)
+    .filter(cn => {
+      const s = clusters[cn].summary || {};
+      return (s.total_running || 0) + (s.total_pending || 0) + (s.total_dependent || 0) > 0;
+    })
+    .sort((a, b) => {
+      const sa = clusters[a].summary || {}, sb = clusters[b].summary || {};
+      return (sb.total_running || 0) - (sa.total_running || 0);
+    });
+
+  if (!clusterNames.length) {
+    el.innerHTML = '<div class="no-jobs">No team jobs found</div>';
+    return;
+  }
+
+  let html = '<div class="tj-grid">';
+  for (const cn of clusterNames) {
+    const cd = clusters[cn];
+    const summary = cd.summary || {};
+    const byUser = summary.by_user || {};
+    const gpuType = CLUSTERS[cn]?.gpu_type || '';
+
+    const users = Object.entries(byUser)
+      .map(([u, d]) => ({ user: u, ...d }))
+      .filter(u => u.running > 0 || u.pending > 0 || u.dependent > 0)
+      .sort((a, b) => b.running - a.running || b.pending - a.pending);
+
+    if (!users.length) continue;
+
+    const totalR = summary.total_running || 0;
+    const totalP = summary.total_pending || 0;
+    const totalD = summary.total_dependent || 0;
+    const maxGpus = Math.max(...users.map(u => u.running + u.pending + u.dependent));
+
+    html += `<div class="tj-card">
+      <div class="tj-card-head">
+        <span class="tj-card-cluster">${cn}</span>
+        ${gpuType ? `<span class="ppp-card-gpu">${gpuType}</span>` : ''}
+        <span class="tj-card-totals">
+          ${totalR ? `<span class="tj-badge tj-running">${totalR}</span>` : ''}
+          ${totalP ? `<span class="tj-badge tj-pending">${totalP}</span>` : ''}
+          ${totalD ? `<span class="tj-badge tj-dependent">${totalD}</span>` : ''}
+        </span>
+      </div>`;
+
+    for (const u of users) {
+      const isMe = u.user === USERNAME;
+      const total = u.running + u.pending + u.dependent;
+      const barMax = maxGpus || 1;
+      const rW = Math.round(u.running / barMax * 100);
+      const pW = Math.round(u.pending / barMax * 100);
+      const dW = Math.round(u.dependent / barMax * 100);
+
+      html += `<div class="tj-user-row${isMe ? ' tj-me' : ''}">
+        <span class="tj-user-name${isMe ? ' tj-user-me' : ''}">${u.user}</span>
+        <span class="tj-bar-wrap">
+          ${rW > 0 ? `<span class="tj-bar-seg tj-seg-running" style="width:${rW}%" title="Running: ${u.running}"></span>` : ''}
+          ${pW > 0 ? `<span class="tj-bar-seg tj-seg-pending" style="width:${pW}%" title="Pending: ${u.pending}"></span>` : ''}
+          ${dW > 0 ? `<span class="tj-bar-seg tj-seg-dependent" style="width:${dW}%" title="Dependent: ${u.dependent}"></span>` : ''}
+        </span>
+        <span class="tj-user-total">${total}</span>
+      </div>`;
+    }
+
     html += '</div>';
   }
   html += '</div>';
@@ -1045,9 +1633,11 @@ async function runAdvisor() {
   const timeLimit = document.getElementById('adv-time')?.value || '4:00:00';
   const canPreempt = document.getElementById('adv-preempt')?.checked || false;
   const cluster = document.getElementById('adv-cluster')?.value || '';
+  const account = document.getElementById('adv-account')?.value || '';
 
   const body = { nodes, time_limit: timeLimit, can_preempt: canPreempt };
   if (cluster) body.clusters = [cluster];
+  if (account) body.account = account;
 
   try {
     const res = await fetch('/api/recommend', {
@@ -1066,6 +1656,16 @@ async function runAdvisor() {
   }
 }
 
+function _fsGaugeHtml(levelFs) {
+  if (!levelFs) return '<span class="dim">—</span>';
+  const cls = levelFs >= 1.2 ? 'fs-good' : levelFs >= 0.8 ? 'fs-neutral' : 'fs-low';
+  const pct = Math.min(100, Math.round(Math.min(levelFs, 2.5) / 2.5 * 100));
+  return `<span class="adv-fs-gauge">
+    <span class="adv-fs-bar"><span class="adv-fs-fill ${cls}" style="width:${pct}%"></span></span>
+    <span class="adv-fs-val">${levelFs.toFixed(2)}</span>
+  </span>`;
+}
+
 function _renderAdvisorResults(recs) {
   const el = document.getElementById('adv-results');
   if (!el) return;
@@ -1074,17 +1674,22 @@ function _renderAdvisorResults(recs) {
     return;
   }
 
+  const hasAcct = recs.some(r => r.recommended_account);
   const rows = recs.slice(0, 20).map((r, i) => {
     const d = r.details || {};
     const isBest = i === 0;
     const preemptBadge = d.preemptable ? '<span class="adv-preempt-tag">preemptable</span>' : '';
     const defaultBadge = d.is_default ? '<span class="adv-default-tag">default</span>' : '';
     const occLevel = d.occupancy_pct >= 90 ? 'high' : d.occupancy_pct >= 60 ? 'medium' : 'low';
+    const acctCell = hasAcct ? `<td class="adv-acct"><span class="adv-acct-short">${r.recommended_account ? _shortAcct(r.recommended_account) : '—'}</span></td>` : '';
+    const fsCell = hasAcct ? `<td>${_fsGaugeHtml(r.level_fs)}</td>` : '';
     return `<tr class="${isBest ? 'adv-best' : ''}">
       <td class="adv-rank">${isBest ? '★' : r.rank}</td>
       <td><span class="adv-cluster">${r.cluster}</span></td>
+      ${acctCell}
       <td><span class="adv-part">${r.partition}</span> ${defaultBadge}${preemptBadge}</td>
       <td><span class="tt-wait-badge ${r.est_wait_cls}">${r.est_wait}</span></td>
+      ${fsCell}
       <td class="dim">${d.idle_nodes}</td>
       <td class="dim">${d.pending_jobs}</td>
       <td>
@@ -1097,10 +1702,12 @@ function _renderAdvisorResults(recs) {
     </tr>`;
   }).join('');
 
+  const acctHdr = hasAcct ? '<th>Account</th>' : '';
+  const fsHdr = hasAcct ? '<th>Fairshare</th>' : '';
   el.innerHTML = `<table class="adv-table">
     <thead><tr>
-      <th></th><th>Cluster</th><th>Partition</th><th>Est. Wait</th>
-      <th>Idle</th><th>Queue</th><th>Occupancy</th><th>Tier</th><th>Limit</th><th>Notes</th>
+      <th></th><th>Cluster</th>${acctHdr}<th>Partition</th><th>Est. Wait</th>
+      ${fsHdr}<th>Idle</th><th>Queue</th><th>Occupancy</th><th>Tier</th><th>Limit</th><th>Notes</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
@@ -1248,6 +1855,13 @@ function _estimateWait(occupancyPct, pendingNodes, totalNodes, t, reason, cluste
   const r = (reason || '').trim();
   const tu = clusterName ? (_teamUsageData[clusterName] || null) : null;
 
+  const aihub = _pppAllocData?.clusters?.[clusterName];
+  const bestFs = aihub?.best_priority?.level_fs || 0;
+  const clOcc = aihub?.cluster_occupied_gpus || 0;
+  const clTot = aihub?.cluster_total_gpus || 1;
+  const clPct = aihub ? Math.round(clOcc / clTot * 100) : occupancyPct;
+  if (aihub) occupancyPct = clPct;
+
   if (r === 'DependencyNeverSatisfied') {
     return { label: 'won\u2019t run', cls: 'long',
       reason: 'Parent job failed. This job is stuck unless manually released.' };
@@ -1270,30 +1884,20 @@ function _estimateWait(occupancyPct, pendingNodes, totalNodes, t, reason, cluste
   }
 
   if (r === 'Priority') {
-    if (tu && tu.total_running_gpus > 0 && hasPriority && t.alloc > 0 && tu.total_running_gpus >= t.alloc) {
-      const topUser = Object.entries(tu.users || {})
-        .map(([u, d]) => ({ user: u, gpus: d.running_gpus || 0 }))
-        .sort((a, b) => b.gpus - a.gpus)[0];
-      const who = topUser && topUser.gpus > t.alloc * 0.5
-        ? `${topUser.user} is using ${topUser.gpus} GPUs. `
-        : '';
-      return { label: 'team at quota', cls: 'slow',
-        reason: `${who}Team is at/over quota (${tu.total_running_gpus}/${t.alloc} GPUs). Jobs wait until teammates\u2019 runs finish.` };
-    }
-    if (hasPriority && t.pct < 50 && occupancyPct < 70)
-      return { label: '~10 \u2013 30 min', cls: 'fast',
-        reason: 'Free capacity exists, but other jobs have higher fair-share priority. Your high team priority should help.' };
-    if (hasPriority && t.pct < 50)
+    if (bestFs >= 1.5 && occupancyPct < 80)
+      return { label: '~5 \u2013 15 min', cls: 'fast',
+        reason: `Strong fairshare (FS ${bestFs.toFixed(1)}). Your PPP has scheduling credit \u2014 should start soon.` };
+    if (bestFs >= 1.2 && occupancyPct < 90)
+      return { label: '~15 \u2013 45 min', cls: 'fast',
+        reason: `Good fairshare (FS ${bestFs.toFixed(1)}). PPP is underutilizing its allocation \u2014 moderate wait.` };
+    if (bestFs >= 0.8)
       return { label: '~30 min \u2013 2h', cls: 'moderate',
-        reason: 'Scheduler is processing higher-priority jobs first. Your team is under quota, so priority is strong.' };
-    if (hasPriority && t.pct < 90)
+        reason: `Neutral fairshare (FS ${bestFs.toFixed(1)}). PPP near its allocation \u2014 normal scheduling priority.` };
+    if (bestFs > 0)
       return { label: '~1 \u2013 4h', cls: 'slow',
-        reason: 'Fair-share priority is moderate (team near quota). Other teams\u2019 jobs may schedule first.' };
-    if (hasPriority)
-      return { label: '~2 \u2013 8h', cls: 'slow',
-        reason: 'Team is over quota \u2014 low fair-share priority. Jobs from under-quota teams go first.' };
+        reason: `Low fairshare (FS ${bestFs.toFixed(1)}). PPP is overdrawn \u2014 other teams get priority.` };
     return { label: '~1 \u2013 4h', cls: 'slow',
-      reason: 'Scheduler has higher-priority jobs ahead in the queue.' };
+      reason: 'Waiting for priority. Other pending jobs have higher fair-share priority.' };
   }
 
   if (pendingNodes === 0 && occupancyPct < 90) {
@@ -1424,157 +2028,81 @@ const _tooltip = (() => {
       }
     }
 
-    // ── Cluster load gauge ──
-    html += `<div class="tt-sep"></div>`;
-    html += `<div class="tt-section-lbl">Cluster load <span class="tt-source">${dataSource}</span></div>`;
-    const occLevel = _barLevel(occupancyPct);
-    html += `<div class="tt-gauge-row">
-      <div class="tt-gauge-track"><div class="tt-gauge-fill ${occLevel}" style="width:${Math.min(occupancyPct, 100)}%"></div></div>
-      <span class="tt-gauge-pct ${_pctColor(occupancyPct)}">${occupancyPct}%</span>
-    </div>`;
-    html += `<div class="tt-detail">${allocNodes} of ${totalNodes} nodes in use`;
-    if (freeNodes > 0) html += ` \u00b7 <span class="green">${freeNodes} free</span>`;
-    else html += ` \u00b7 <span class="red">none free</span>`;
-    html += `</div>`;
-
-    if (pendingJobs > 0) {
-      const oversubRatio = freeNodes > 0
-        ? (pendingJobs / freeNodes).toFixed(1)
-        : null;
-      html += `<div class="tt-detail">${pendingGpus} GPUs queued cluster-wide`;
-      if (oversubRatio !== null) html += ` \u00b7 ${oversubRatio}\u00d7 oversubscribed`;
-      else html += ` \u00b7 no free capacity`;
-      html += `</div>`;
-    } else {
-      html += `<div class="tt-detail green">No queue \u2014 jobs start immediately</div>`;
-    }
-
-    // ── Team priority ──
-    if (t.alloc > 0) {
+    // ── Cluster load (from AI Hub) ──
+    const aihubCluster = _pppAllocData?.clusters?.[clusterName];
+    if (aihubCluster) {
       html += `<div class="tt-sep"></div>`;
-      html += `<div class="tt-section-lbl">Your team\u2019s priority</div>`;
+      const clOcc = aihubCluster.cluster_occupied_gpus || 0;
+      const clTot = aihubCluster.cluster_total_gpus || 0;
+      const clPct = clTot > 0 ? Math.round(clOcc / clTot * 100) : 0;
+      html += `<div class="tt-section-lbl">Cluster load</div>`;
       html += `<div class="tt-gauge-row">
-        <div class="tt-gauge-track"><div class="tt-gauge-fill ${_barLevel(t.pct)}" style="width:${Math.min(t.pct, 100)}%"></div></div>
-        <span class="tt-gauge-pct ${_pctColor(t.pct)}">${t.pct}%</span>
+        <div class="tt-gauge-track"><div class="tt-gauge-fill ${_barLevel(clPct)}" style="width:${Math.min(clPct, 100)}%"></div></div>
+        <span class="tt-gauge-pct ${_pctColor(clPct)}">${clPct}%</span>
       </div>`;
+      html += `<div class="tt-detail">${clOcc.toLocaleString()} / ${clTot.toLocaleString()} GPUs occupied</div>`;
 
-      let priorityHtml;
-      if (t.pct >= 100)
-        priorityHtml = `<span class="tt-priority-tag low">Low priority</span> over quota`;
-      else if (t.pct >= 70)
-        priorityHtml = `<span class="tt-priority-tag med">Normal</span> near quota`;
-      else
-        priorityHtml = `<span class="tt-priority-tag high">High priority</span> under quota`;
-      html += `<div class="tt-row"><span class="tt-label">${t.runGpus} / ${t.alloc} GPUs</span><span class="tt-val">${priorityHtml}</span></div>`;
-
-      if (t.pendGpus > 0) {
-        html += `<div class="tt-detail">${t.pendGpus} GPUs pending from your team</div>`;
+      const bestP = aihubCluster.best_priority;
+      const bestC = aihubCluster.best_capacity;
+      if (bestP) {
+        const fsCls = bestP.level_fs >= 1.2 ? 'green' : bestP.level_fs >= 0.8 ? 'amber' : 'red';
+        html += `<div class="tt-detail">Best account: <b>${_shortAcct(bestP.account)}</b> (FS <span class="${fsCls}">${bestP.level_fs.toFixed(1)}</span>)`;
+        if (bestC && bestC.account !== bestP.account)
+          html += ` · Most headroom: <b>${_shortAcct(bestC.account)}</b> (${bestC.headroom} free)`;
+        html += `</div>`;
       }
-    }
-
-    // ── Team member usage (from Slurm account query) ──
-    const tu = _teamUsageData[clusterName];
-    if (tu && tu.users && Object.keys(tu.users).length > 0) {
+    } else {
       html += `<div class="tt-sep"></div>`;
-      const resolved = _resolveGpuAlloc(clusterName);
-      const weeklyAlloc = resolved.gpus;
-      const isAnyAlloc = resolved.isAny;
-      const totalRun = tu.total_running_gpus || 0;
-      const quota = weeklyAlloc || t.alloc || totalRun || 1;
-      const anyTag = isAnyAlloc ? ' (any)' : '';
-      const allocLabel = weeklyAlloc ? `${totalRun} / ${weeklyAlloc} GPUs${anyTag}` : '';
-      if (weeklyAlloc) {
-        const allocPct = Math.min(100, Math.round(totalRun / weeklyAlloc * 100));
-        html += `<div class="tt-section-lbl">Team usage · ${allocLabel}</div>`;
-        html += `<div class="tt-gauge-row">
-          <div class="tt-gauge-track"><div class="tt-gauge-fill ${_barLevel(allocPct)}" style="width:${Math.min(allocPct, 100)}%"></div></div>
-          <span class="tt-gauge-pct ${_pctColor(allocPct)}">${allocPct}%</span>
-        </div>`;
-      } else {
-        html += `<div class="tt-section-lbl">Team usage by member</div>`;
-      }
-      const sorted = Object.entries(tu.users)
-        .map(([u, d]) => ({ user: u, run: d.running_gpus || 0, pend: d.pending_gpus || 0 }))
-        .filter(x => x.run > 0 || x.pend > 0)
-        .sort((a, b) => b.run - a.run || b.pend - a.pend);
-      if (sorted.length) {
-        for (const m of sorted) {
-          const barPct = Math.min(100, Math.round(m.run / quota * 100));
-          const isMe = m.user === (typeof USERNAME !== 'undefined' ? USERNAME : '');
-          const nameCls = isMe ? 'tt-team-me' : '';
-          const parts = [];
-          if (m.run > 0) parts.push(`${m.run} running`);
-          if (m.pend > 0) parts.push(`${m.pend} pending`);
-          html += `<div class="tt-team-row">
-            <span class="tt-team-name ${nameCls}">${m.user}</span>
-            <span class="tt-team-bar-wrap"><span class="tt-team-bar ${_barLevel(barPct)}" style="width:${barPct}%"></span></span>
-            <span class="tt-team-gpus">${parts.join(', ')}</span>
-          </div>`;
-        }
-        if (sorted.length > 0 && sorted[0].run > quota * 0.7 && sorted[0].user !== (typeof USERNAME !== 'undefined' ? USERNAME : '')) {
-          html += `<div class="tt-insight amber"><b>${sorted[0].user}</b> is using ${sorted[0].run}/${quota} team GPUs</div>`;
-        }
-      }
-    }
-
-    // ── Partition info ──
-    if (ji.partition && _partitionData) {
-      const cps = _partitionData[clusterName];
-      if (cps && cps.partitions) {
-        const curPart = cps.partitions.find(p => p.name === ji.partition);
-        if (curPart) {
-          html += `<div class="tt-sep"></div>`;
-          html += `<div class="tt-section-lbl">Partition: ${ji.partition}</div>`;
-          html += `<div class="tt-detail">Priority tier ${curPart.priority_tier} · ${curPart.idle_nodes} idle nodes · ${curPart.pending_jobs} pending</div>`;
-          const betterParts = cps.partitions.filter(p =>
-            p.name !== ji.partition &&
-            p.priority_tier > curPart.priority_tier &&
-            !p.preemptable &&
-            p.idle_nodes > 0
-          );
-          if (betterParts.length) {
-            const best = betterParts[0];
-            html += `<div class="tt-insight green">Try <b>${best.name}</b> (tier ${best.priority_tier}, ${best.idle_nodes} idle)</div>`;
-          }
-        }
-      }
-    }
-
-    // ── Cross-cluster suggestion ──
-    if (_partitionData) {
-      const otherClusters = Object.entries(_partitionData)
-        .filter(([c]) => c !== clusterName)
-        .map(([c, ps]) => ({ cluster: c, idle: ps.idle_nodes || 0, pending: ps.pending_jobs || 0, total: ps.total_nodes || 0 }))
-        .filter(c => c.idle > 5)
-        .sort((a, b) => (b.idle / Math.max(b.total, 1)) - (a.idle / Math.max(a.total, 1)));
-      if (otherClusters.length && pendingNodes > 0) {
-        const best = otherClusters[0];
-        const bestIdlePct = Math.round(best.idle / Math.max(best.total, 1) * 100);
-        if (bestIdlePct > 5) {
-          html += `<div class="tt-insight green">Consider <b>${best.cluster}</b>: ${best.idle} idle nodes (${bestIdlePct}% free)</div>`;
-        }
-      }
+      html += `<div class="tt-section-lbl">Cluster load</div>`;
+      const occLevel = _barLevel(occupancyPct);
+      html += `<div class="tt-gauge-row">
+        <div class="tt-gauge-track"><div class="tt-gauge-fill ${occLevel}" style="width:${Math.min(occupancyPct, 100)}%"></div></div>
+        <span class="tt-gauge-pct ${_pctColor(occupancyPct)}">${occupancyPct}%</span>
+      </div>`;
+      html += `<div class="tt-detail">${allocNodes} of ${totalNodes} nodes in use</div>`;
     }
 
     // ── Actionable insight ──
     html += `<div class="tt-sep"></div>`;
     html += `<div class="tt-insight">${est.reason}</div>`;
 
-    // ── Storage quota (compact) ──
-    const sq = _storageQuota[clusterName];
-    if (sq && sq.project_quotas && Object.keys(sq.project_quotas).length) {
-      html += `<div class="tt-sep"></div>`;
-      const pills = [];
-      for (const [pname, pq] of Object.entries(sq.project_quotas)) {
-        const pparts = pname.split('_');
-        const short = pparts.length > 2 ? pparts.slice(-1)[0] : pname;
-        const sp = pq.space_used_pct || 0;
-        const ip = pq.files_used_pct || 0;
-        const worst = Math.max(sp, ip);
-        const cls = _pctColor(worst);
-        pills.push(`<span class="tt-storage-pill ${cls}" title="${short}: ${pq.space_used_human} / ${pq.space_quota_human}">${short} ${Math.round(worst)}%</span>`);
+    // ── Where to submit instead ──
+    if (_pppAllocData?.clusters) {
+      const curGpuType = (CLUSTERS[clusterName]?.gpu_type || '').toLowerCase();
+      const jobNodes = parseInt(ji.nodes) || 1;
+      const gm = (ji.gres || '').match(/gpu[^:]*:(?:[^:]+:)?(\d+)/);
+      const jobGpusPerNode = gm ? parseInt(gm[1]) : (gpuPer || 8);
+      const jobTotalGpus = jobNodes * jobGpusPerNode;
+
+      const alts = Object.entries(_pppAllocData.clusters)
+        .filter(([c]) => c !== clusterName)
+        .map(([c, cd]) => {
+          const s = _clusterSubmitScore(cd, c);
+          const gpu = (cd.gpu_type || '').toLowerCase();
+          const sameGpu = gpu === curGpuType;
+          return { cluster: c, gpu: cd.gpu_type || '', sameGpu, ...s };
+        })
+        .filter(a => a.freeForTeam >= jobTotalGpus)
+        .sort((a, b) => {
+          if (a.sameGpu !== b.sameGpu) return a.sameGpu ? -1 : 1;
+          return b.score - a.score;
+        })
+        .slice(0, 2);
+
+      if (alts.length) {
+        html += `<div class="tt-sep"></div>`;
+        html += `<div class="tt-section-lbl">Would start faster on</div>`;
+        for (const a of alts) {
+          const acctShort = a.bestAcct ? _shortAcct(a.bestAcct) : '';
+          const fsCls = a.levelFs >= 1.2 ? 'green' : a.levelFs >= 0.8 ? 'amber' : 'red';
+          html += `<div class="tt-insight green"><b>${a.cluster}</b>`;
+          html += ` <span class="dim">${a.gpu}${a.sameGpu ? '' : ' ⚠'}</span>`;
+          html += ` · ${a.freeForTeam} free`;
+          if (acctShort) html += ` · via <b>${acctShort}</b>`;
+          html += ` · FS <span class="${fsCls}">${a.levelFs.toFixed(1)}</span>`;
+          html += `</div>`;
+        }
       }
-      html += `<div class="tt-storage-row">${pills.join('')}</div>`;
     }
 
     el.innerHTML = html;

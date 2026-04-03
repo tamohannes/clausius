@@ -40,7 +40,7 @@ from .logs import (
 from .jobs import (
     refresh_all_clusters, refresh_cluster,
     schedule_prefetch, prefetch_cluster_bulk, fetch_est_start_bulk,
-    fetch_team_usage,
+    fetch_team_usage, fetch_team_jobs,
     get_job_stats_cached, fetch_run_metadata_sync,
     create_run_on_demand,
     _last_polled,
@@ -477,6 +477,37 @@ def api_team_usage():
 
     from .config import TEAM_GPU_ALLOC
     return jsonify({"status": "ok", "team_usage": results, "team_gpu_allocations": dict(TEAM_GPU_ALLOC)})
+
+
+@api.route("/api/team_jobs")
+def api_team_jobs():
+    """Fetch per-job breakdown for team members across all PPP accounts."""
+    cluster_filter = request.args.get("cluster", "")
+    if cluster_filter:
+        cluster_list = [c.strip() for c in cluster_filter.split(",") if c.strip()]
+    else:
+        cluster_list = [c for c in CLUSTERS if c != "local"]
+
+    results = {}
+    threads = []
+    import threading as _th
+    def _fetch(c):
+        try:
+            r = fetch_team_jobs(c)
+            if r:
+                results[c] = r
+        except Exception:
+            pass
+    for c in cluster_list:
+        if c not in CLUSTERS or c == "local":
+            continue
+        t = _th.Thread(target=_fetch, args=(c,), daemon=True)
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join(timeout=25)
+
+    return jsonify({"status": "ok", "clusters": results})
 
 
 @api.route("/api/cancel/<cluster>/<job_id>", methods=["POST"])
@@ -934,7 +965,8 @@ def api_settings_post():
 
 # ─── Logbook routes ──────────────────────────────────────────────────────────
 
-from .cluster_dashboard import get_cluster_utilization, DASHBOARD_BASE_URL
+from .cluster_dashboard import get_cluster_utilization
+from .config import DASHBOARD_URL as _DASHBOARD_URL
 from .storage_quota import fetch_storage_quota
 
 
@@ -943,7 +975,7 @@ def api_user_avatar():
     """Proxy the user's avatar image from the Science dashboard."""
     import urllib.request as _ur
     user = request.args.get("user", DEFAULT_USER)
-    url = f"{DASHBOARD_BASE_URL}/images/{user}.png"
+    url = f"{_DASHBOARD_URL}/images/{user}.png"
     try:
         with _ur.urlopen(url, timeout=5) as resp:
             data = resp.read()
@@ -953,7 +985,7 @@ def api_user_avatar():
             r.headers["Cache-Control"] = "public, max-age=86400"
             return r
     except Exception:
-        url_jpg = f"{DASHBOARD_BASE_URL}/images/{user}.jpeg"
+        url_jpg = f"{_DASHBOARD_URL}/images/{user}.jpeg"
         try:
             with _ur.urlopen(url_jpg, timeout=5) as resp:
                 data = resp.read()
@@ -1024,16 +1056,88 @@ def api_recommend():
     can_preempt = payload.get("can_preempt", False)
     gpu_type = payload.get("gpu_type", "")
     clusters = payload.get("clusters", None)
+    accounts = payload.get("accounts", None)
 
     try:
         results = recommend(
             nodes=nodes, time_limit=time_limit, account=account,
             can_preempt=can_preempt, gpu_type=gpu_type, clusters=clusters,
+            accounts=accounts,
         )
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500
 
     return jsonify({"status": "ok", "recommendations": results})
+
+
+# ─── AI Hub routes ────────────────────────────────────────────────────────────
+
+from .aihub import (
+    get_ppp_allocations as _aihub_alloc,
+    get_usage_history as _aihub_history,
+    get_user_breakdown as _aihub_users,
+    get_cluster_occupancy as _aihub_occupancy,
+    get_team_overlay as _aihub_team_overlay,
+)
+
+
+@api.route("/api/aihub/allocations")
+def api_aihub_allocations():
+    accounts = request.args.get("accounts", "")
+    acct_list = [a.strip() for a in accounts.split(",") if a.strip()] or None
+    try:
+        data = _aihub_alloc(accounts=acct_list)
+        return jsonify({"status": "ok", **data})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@api.route("/api/aihub/history")
+def api_aihub_history():
+    days = int(request.args.get("days", 14))
+    cluster = request.args.get("cluster", "")
+    interval = request.args.get("interval", "1d")
+    clusters = [c.strip() for c in cluster.split(",") if c.strip()] or None
+    try:
+        data = _aihub_history(clusters=clusters, days=days, interval=interval)
+        return jsonify({"status": "ok", **data})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@api.route("/api/aihub/users")
+def api_aihub_users():
+    account = request.args.get("account", "")
+    cluster = request.args.get("cluster", "")
+    days = int(request.args.get("days", 7))
+    if not account or not cluster:
+        return jsonify({"status": "error", "error": "account and cluster required"}), 400
+    try:
+        data = _aihub_users(account, cluster, days=days)
+        return jsonify({"status": "ok", **data})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@api.route("/api/aihub/occupancy")
+def api_aihub_occupancy():
+    days = int(request.args.get("days", 7))
+    cluster = request.args.get("cluster", "")
+    clusters = [c.strip() for c in cluster.split(",") if c.strip()] or None
+    try:
+        data = _aihub_occupancy(clusters=clusters, days=days)
+        return jsonify({"status": "ok", **data})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@api.route("/api/aihub/team_overlay")
+def api_aihub_team_overlay():
+    try:
+        data = _aihub_team_overlay()
+        return jsonify({"status": "ok", **data})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
 
 
 # ── Logbook routes ────────────────────────────────────────────────────────────

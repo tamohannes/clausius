@@ -37,6 +37,11 @@ APP_PORT = _CONFIG.get("port", 7272)
 TEAM_NAME = _CONFIG.get("team", "")
 TEAM_GPU_ALLOC = _CONFIG.get("team_gpu_allocations", {})
 PPPS = _CONFIG.get("ppps", {})
+PPP_ACCOUNTS = _CONFIG.get("ppp_accounts", [])
+TEAM_MEMBERS = _CONFIG.get("team_members", [])
+AIHUB_OPENSEARCH_URL = _CONFIG.get("aihub_opensearch_url", "")
+DASHBOARD_URL = _CONFIG.get("dashboard_url", "")
+AIHUB_CACHE_TTL = _CONFIG.get("aihub_cache_ttl_sec", 300)
 LOG_SEARCH_BASES = _CONFIG.get("log_search_bases", [])
 NEMO_RUN_BASES = _CONFIG.get("nemo_run_bases", [])
 MOUNT_LUSTRE_PREFIXES = _CONFIG.get("mount_lustre_prefixes", [])
@@ -320,6 +325,7 @@ def reload_config(new_cfg):
     global BACKUP_INTERVAL_HOURS, BACKUP_MAX_KEEP
     global LOG_SEARCH_BASES, NEMO_RUN_BASES, MOUNT_LUSTRE_PREFIXES
     global LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE
+    global PPP_ACCOUNTS, TEAM_MEMBERS, AIHUB_OPENSEARCH_URL, DASHBOARD_URL, AIHUB_CACHE_TTL
 
     with open(CONFIG_PATH, "w") as fh:
         json.dump(new_cfg, fh, indent=2)
@@ -340,6 +346,11 @@ def reload_config(new_cfg):
     TEAM_NAME = new_cfg.get("team", "")
     TEAM_GPU_ALLOC = new_cfg.get("team_gpu_allocations", {})
     PPPS = new_cfg.get("ppps", {})
+    PPP_ACCOUNTS = new_cfg.get("ppp_accounts", [])
+    TEAM_MEMBERS = new_cfg.get("team_members", [])
+    AIHUB_OPENSEARCH_URL = new_cfg.get("aihub_opensearch_url", "")
+    DASHBOARD_URL = new_cfg.get("dashboard_url", "")
+    AIHUB_CACHE_TTL = new_cfg.get("aihub_cache_ttl_sec", 300)
 
     from .ssh import close_cluster_client
 

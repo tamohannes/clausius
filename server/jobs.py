@@ -10,6 +10,7 @@ from datetime import datetime
 from .config import (
     APP_ROOT, CLUSTERS, DEFAULT_USER, STATE_ORDER, SQUEUE_FMT, SQUEUE_HDR,
     LOCAL_PROC_INCLUDE, LOCAL_PROC_EXCLUDE,
+    PPP_ACCOUNTS, TEAM_MEMBERS,
     SSH_TIMEOUT, CACHE_FRESH_SEC,
     _cache_lock, _cache, _seen_jobs, _last_polled,
     _cache_get, _cache_set,
@@ -1264,6 +1265,139 @@ def fetch_team_usage(cluster):
         "total_pending_gpus": total_pending,
     }
     _cache_set(_team_usage_cache, cluster, result)
+    return result
+
+
+_team_jobs_cache = {}
+TEAM_JOBS_TTL_SEC = 120
+
+
+def _parse_gres_gpu_count(gres_str):
+    """Extract GPU count from a GRES string like 'gpu:8' or 'gpu:a100:4'."""
+    if not gres_str or gres_str == "N/A":
+        return 0
+    for part in gres_str.split(","):
+        part = part.strip().lower()
+        if part.startswith("gpu"):
+            segs = part.split(":")
+            try:
+                return int(segs[-1])
+            except ValueError:
+                return 1
+    return 0
+
+
+def fetch_team_jobs(cluster):
+    """Fetch per-job breakdown for all PPP accounts on a cluster.
+
+    Returns jobs list and summary with running/pending/dependent counts,
+    filtered to team members only.
+    """
+    enable_standalone_ssh()
+    if cluster == "local":
+        return None
+
+    cached = _cache_get(_team_jobs_cache, cluster, TEAM_JOBS_TTL_SEC)
+    if cached is not None:
+        return cached
+
+    accounts = PPP_ACCOUNTS
+    if not accounts:
+        return None
+
+    accts_csv = ",".join(accounts)
+    cfg = CLUSTERS.get(cluster, {})
+    gpus_per_node = cfg.get("gpus_per_node", 8) or 8
+    team_set = set(TEAM_MEMBERS) if TEAM_MEMBERS else None
+
+    fmt = "%u|%T|%r|%D|%b|%P|%a|%j|%l"
+    try:
+        out, _ = ssh_run_with_timeout(
+            cluster,
+            f'squeue -A {accts_csv} -h -o "{fmt}" 2>/dev/null',
+            timeout_sec=12,
+        )
+    except Exception:
+        return None
+
+    jobs = []
+    by_user = {}
+    by_account = {}
+    total_running = total_pending = total_dependent = 0
+
+    for line in out.splitlines():
+        parts = line.strip().split("|")
+        if len(parts) < 9:
+            continue
+        user = parts[0].strip()
+
+
+        state = parts[1].strip().upper()
+        reason = parts[2].strip()
+        try:
+            nodes = int(parts[3].strip())
+        except ValueError:
+            nodes = 1
+        gres_str = parts[4].strip()
+        partition = parts[5].strip()
+        account = parts[6].strip()
+        job_name = parts[7].strip()
+        timelimit = parts[8].strip()
+
+        gpu_count = _parse_gres_gpu_count(gres_str)
+        is_cpu = partition.startswith("cpu")
+        if not is_cpu and gpu_count == 0:
+            gpu_count = nodes * gpus_per_node
+        gpus = gpu_count if not is_cpu else 0
+
+        is_dependent = state == "PENDING" and "depend" in reason.lower()
+
+        jobs.append({
+            "user": user,
+            "state": "DEPENDENT" if is_dependent else state,
+            "reason": reason if state == "PENDING" else "",
+            "nodes": nodes,
+            "gpus": gpus,
+            "is_gpu": not is_cpu,
+            "partition": partition,
+            "account": account,
+            "job_name": job_name,
+            "timelimit": timelimit,
+        })
+
+        if user not in by_user:
+            by_user[user] = {"running": 0, "pending": 0, "dependent": 0}
+        if is_dependent:
+            by_user[user]["dependent"] += gpus
+            total_dependent += gpus
+        elif state == "RUNNING":
+            by_user[user]["running"] += gpus
+            total_running += gpus
+        elif state == "PENDING":
+            by_user[user]["pending"] += gpus
+            total_pending += gpus
+
+        acct_short = account.split("_")[-1] if "_" in account else account
+        if acct_short not in by_account:
+            by_account[acct_short] = {"running": 0, "pending": 0, "dependent": 0}
+        if is_dependent:
+            by_account[acct_short]["dependent"] += gpus
+        elif state == "RUNNING":
+            by_account[acct_short]["running"] += gpus
+        elif state == "PENDING":
+            by_account[acct_short]["pending"] += gpus
+
+    result = {
+        "jobs": jobs,
+        "summary": {
+            "by_user": by_user,
+            "by_account": by_account,
+            "total_running": total_running,
+            "total_pending": total_pending,
+            "total_dependent": total_dependent,
+        },
+    }
+    _cache_set(_team_jobs_cache, cluster, result)
     return result
 
 

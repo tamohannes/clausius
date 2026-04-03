@@ -7,18 +7,19 @@ with estimated wait times and actionable tips.
 
 import logging
 
-from .config import CLUSTERS, _cache_get, _team_usage_cache, TEAM_USAGE_TTL_SEC
+from .config import CLUSTERS, PPP_ACCOUNTS, _cache_get, _team_usage_cache, TEAM_USAGE_TTL_SEC
 from .partitions import get_all_partitions, _parse_timelimit, _estimate_partition_wait
 
 log = logging.getLogger(__name__)
 
 _SKIP_PARTITIONS = {"defq", "fake", "admin"}
 
-_W_QUEUE = 0.30
+_W_QUEUE = 0.20
 _W_OCCUPANCY = 0.20
-_W_PRIORITY = 0.20
+_W_PRIORITY = 0.15
 _W_IDLE = 0.15
-_W_TEAM = 0.15
+_W_FAIRSHARE = 0.20
+_W_TEAM = 0.10
 
 
 def _time_to_sec(time_limit):
@@ -107,8 +108,31 @@ def _generate_tip(part, cluster_name, all_parts_for_cluster, score_rank):
     return "; ".join(tips) if tips else ""
 
 
+def _get_fairshare_data():
+    """Load AI Hub fairshare data (lazy import to avoid circular deps)."""
+    try:
+        from .aihub import get_fairshare_for_recommendations
+        return get_fairshare_for_recommendations()
+    except Exception as exc:
+        log.debug("Could not fetch AI Hub fairshare data: %s", exc)
+        return {}
+
+
+def _pick_best_account(fs_cluster, accounts):
+    """Pick the account with the highest level_fs for a cluster."""
+    best_acct = None
+    best_fs = -1
+    for acct in accounts:
+        ad = fs_cluster.get(acct, {})
+        lfs = ad.get("level_fs", 0)
+        if lfs > best_fs:
+            best_fs = lfs
+            best_acct = acct
+    return best_acct, best_fs
+
+
 def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
-              gpu_type="", clusters=None):
+              gpu_type="", clusters=None, accounts=None):
     """Return ranked list of (cluster, partition) recommendations.
 
     Args:
@@ -118,6 +142,7 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
         can_preempt: Whether the job tolerates preemption.
         gpu_type: Filter clusters by GPU type (optional).
         clusters: List of cluster names to consider (optional, defaults to all).
+        accounts: List of PPP accounts to evaluate (optional, uses config default).
 
     Returns:
         List of recommendation dicts, sorted by score (best first).
@@ -135,6 +160,9 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
             if CLUSTERS.get(c, {}).get("gpu_type", "").lower() == gpu_type.lower()
         }
 
+    ppp_accounts = accounts or PPP_ACCOUNTS or []
+    fs_data = _get_fairshare_data() if ppp_accounts else {}
+
     max_tier_global = 1
     for cname, parts in all_partitions.items():
         if cname not in target_clusters:
@@ -151,8 +179,12 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
 
         max_tier_cluster = max((p.get("priority_tier", 0) for p in parts), default=1) or 1
 
+        fs_cluster = fs_data.get(cluster_name, {})
+        best_acct, best_level_fs = _pick_best_account(fs_cluster, ppp_accounts) if ppp_accounts else (None, 0)
+
         for part in parts:
-            eligible, reason = _is_eligible(part, nodes, time_sec, account, can_preempt)
+            filter_account = account or best_acct or ""
+            eligible, reason = _is_eligible(part, nodes, time_sec, filter_account, can_preempt)
             if not eligible:
                 continue
 
@@ -188,11 +220,16 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
                     else:
                         team_status = "under_quota"
 
+            fairshare_score = 0.0
+            if best_level_fs > 0:
+                fairshare_score = max(0, 1.0 - min(best_level_fs, 3.0) / 3.0)
+
             score = (
                 _W_QUEUE * min(queue_ratio, 3.0) / 3.0
                 + _W_OCCUPANCY * (occupancy_pct / 100.0)
                 + _W_PRIORITY * (1.0 - tier_norm)
                 + _W_IDLE * (1.0 - idle_norm)
+                + _W_FAIRSHARE * fairshare_score
                 + _W_TEAM * team_score
             )
 
@@ -203,6 +240,8 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
             cluster_gpus_fallback = CLUSTERS.get(cluster_name, {}).get("gpus_per_node", 0)
             gpn = part.get("gpus_per_node", 0) or cluster_gpus_fallback
 
+            best_acct_data = fs_cluster.get(best_acct, {}) if best_acct else {}
+
             candidates.append({
                 "cluster": cluster_name,
                 "partition": part["name"],
@@ -210,6 +249,10 @@ def recommend(nodes=1, time_limit="4:00:00", account="", can_preempt=False,
                 "est_wait": wait_label,
                 "est_wait_cls": wait_cls,
                 "team_status": team_status,
+                "recommended_account": best_acct or "",
+                "level_fs": round(best_level_fs, 3) if best_level_fs else 0,
+                "fairshare_avail_gpus": best_acct_data.get("fairshare_avail", 0),
+                "allocation_headroom": best_acct_data.get("headroom", 0),
                 "details": {
                     "total_nodes": total,
                     "idle_nodes": idle,

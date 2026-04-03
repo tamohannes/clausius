@@ -1,6 +1,6 @@
 """Fetch and cache cluster utilization data from the external Science dashboard.
 
-The dashboard at DASHBOARD_BASE_URL exposes:
+The dashboard URL is configured via `dashboard_url` in config.json. It exposes:
   /api/config  — cluster order, GPU per node, team allocations, team membership
   /api/status  — per-cluster per-user running/pending/total node counts
 
@@ -16,9 +16,10 @@ import time
 import urllib.request
 import urllib.error
 
+from .config import DASHBOARD_URL
+
 log = logging.getLogger(__name__)
 
-DASHBOARD_BASE_URL = "http://10.110.41.1:5000"
 CACHE_TTL_SEC = 120
 
 _lock = threading.Lock()
@@ -27,7 +28,9 @@ _cached_at = 0.0
 
 
 def _fetch_json(path, timeout=10):
-    url = f"{DASHBOARD_BASE_URL}{path}"
+    if not DASHBOARD_URL:
+        return None
+    url = f"{DASHBOARD_URL}{path}"
     req = urllib.request.Request(url, headers={"Accept": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
