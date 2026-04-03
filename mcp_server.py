@@ -1043,8 +1043,11 @@ def where_to_submit(
     For each recommended cluster, returns:
     - cluster name, GPU type
     - free_for_team: GPUs available considering both PPP headroom and team quota
+    - idle_nodes: real-time idle GPU nodes from sinfo (updates every 2min)
+    - pending_queue: total pending jobs on the cluster
     - best_account: which PPP account to use (e.g. "llmservice_nemo_reasoning")
-    - level_fs: fairshare scheduling priority (>1.0 = credit, <1.0 = overdrawn)
+    - ppp_level_fs: PPP-wide fairshare priority (>1.0 = credit, <1.0 = overdrawn)
+    - my_level_fs: YOUR personal fairshare on that account (determines queue position)
     - cluster_occupancy: total cluster GPU utilization percentage
     - team_running / team_pending: your team's current GPU usage
     - my_running / my_pending: your personal GPU usage
@@ -1066,6 +1069,12 @@ def where_to_submit(
     alloc = _api_get("/api/aihub/allocations")
     if not isinstance(alloc, dict) or alloc.get("status") != "ok":
         return {"status": "error", "error": "Could not fetch allocation data"}
+
+    my_fs = _api_get("/api/aihub/my_fairshare")
+    my_fs_clusters = my_fs.get("clusters", {}) if isinstance(my_fs, dict) else {}
+
+    partitions = _api_get("/api/partition_summary")
+    part_clusters = partitions.get("clusters", {}) if isinstance(partitions, dict) else {}
 
     team_jobs = _api_get("/api/team_jobs")
     tj_clusters = team_jobs.get("clusters", {}) if isinstance(team_jobs, dict) else {}
@@ -1122,14 +1131,24 @@ def where_to_submit(
         tot = cd.get("cluster_total_gpus", 0)
         occ_pct = round(occ / tot * 100) if tot > 0 else 0
 
+        ps = part_clusters.get(cn, {})
+        idle_nodes = ps.get("idle_nodes", 0)
+        pending_queue = ps.get("pending_jobs", 0)
+
+        my_acct_fs = my_fs_clusters.get(cn, {}).get(best_acct, {})
+        my_level_fs = round(my_acct_fs.get("level_fs", 0), 2) if my_acct_fs else 0
+
         if free >= job_gpus:
             recommendations.append({
                 "cluster": cn,
                 "gpu_type": cd.get("gpu_type", ""),
                 "same_gpu_type": same_gpu,
                 "free_for_team": free,
+                "idle_nodes": idle_nodes,
+                "pending_queue": pending_queue,
                 "best_account": best_acct,
-                "level_fs": round(level_fs, 2),
+                "ppp_level_fs": round(level_fs, 2),
+                "my_level_fs": my_level_fs,
                 "cluster_occupancy_pct": occ_pct,
                 "team_running": team_running,
                 "team_pending": team_pending,

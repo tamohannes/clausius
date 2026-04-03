@@ -955,7 +955,17 @@ function _renderSubmitSummary(clusters) {
       <span class="ws-cluster">${c.cn}</span>
       ${c.gpuType ? `<span class="ws-gpu">${c.gpuType}</span>` : ''}
       <span class="ws-headroom">${c.freeForTeam} free</span>
+      ${(() => {
+        const cps = _partitionData?.[c.cn];
+        return cps ? `<span class="ws-idle">${cps.idle_nodes || 0} idle</span>` : '';
+      })()}
       ${acctShort ? `<span class="ws-acct">via ${acctShort}</span>` : ''}
+      ${(() => {
+        const mf = _myFairshareData?.clusters?.[c.cn]?.[c.bestAcct];
+        if (!mf) return '';
+        const cls = mf.level_fs >= 1.2 ? 'ws-fs-good' : mf.level_fs >= 0.8 ? 'ws-fs-neutral' : 'ws-fs-low';
+        return `<span class="ws-my-fs ${cls}">you ${mf.level_fs.toFixed(1)}</span>`;
+      })()}
       <div class="ws-usage-row">
         <span class="ws-usage-me" title="You: ${myR} running, ${myP} pending">
           <span class="ws-dot ws-dot-me-run"></span>${myR}
@@ -1009,12 +1019,18 @@ function _renderPppAllocations(data) {
     const maxAlloc = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : rawMaxAlloc;
 
     const hasTeamQuota = teamAlloc === 'any' || (teamNum && teamNum > 0);
+    const ps = _partitionData?.[cn];
+    const idleNodes = ps?.idle_nodes || 0;
+    const pendingJobs = ps?.pending_jobs || 0;
+    const idleCls = idleNodes > 0 ? 'ppp-idle-ok' : 'ppp-idle-none';
+
     html += `<div class="ppp-card${hasTeamQuota ? '' : ' ppp-card-dim'}">
       <div class="ppp-card-head">
         <span class="ppp-card-cluster">${cn}</span>
         ${cd.gpu_type ? `<span class="ppp-card-gpu">${cd.gpu_type}</span>` : ''}
         ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
-      </div>`;
+      </div>
+      ${ps ? `<div class="ppp-card-live"><span class="${idleCls}">${idleNodes} idle</span> · ${pendingJobs} queued</div>` : ''}`;
 
     const overlayCluster = _pppOverlayData?.clusters?.[cn] || {};
     const currentUser = _pppOverlayData?.current_user || USERNAME;
@@ -1113,8 +1129,12 @@ function _renderPppAllocations(data) {
         teamPopLabel = `${teamOthersTotal}`;
       }
 
+      const myFsAcct = _myFairshareData?.clusters?.[cn]?.[acct];
+      const myFsLabel = myFsAcct ? `FS ${myFsAcct.level_fs.toFixed(2)}` : '';
+      const myFsCls = myFsAcct ? (myFsAcct.level_fs >= 1.2 ? 'pop-fs-good' : myFsAcct.level_fs >= 0.8 ? 'pop-fs-neutral' : 'pop-fs-low') : '';
+
       const popupRows = [
-        { label: currentUser, value: myPopLabel, detail: '', cls: 'pop-me' },
+        { label: currentUser, value: myPopLabel, detail: myFsLabel, cls: `pop-me ${myFsCls}` },
         { label: 'team', value: teamPopLabel, detail: '', cls: 'pop-team' },
         ...(teamAllocLabel ? [{ label: 'team alloc', value: teamAllocLabel, detail: 'informal', cls: 'pop-team-alloc' }] : []),
         { label: `${acctShortName} non-team`, value: `${pppNonTeam}`, detail: '', cls: 'pop-ppp' },
@@ -1135,7 +1155,13 @@ function _renderPppAllocations(data) {
           <div class="ppp-popup">${popupHtml}</div>
         </div>
         <span class="ppp-acct-nums"><strong>${consumed}</strong> / ${ad.gpus_allocated}</span>
-        <span class="ppp-fs-indicator ${fsCls}" title="FS ${ad.level_fs.toFixed(2)}">${ad.level_fs.toFixed(1)}</span>
+        <span class="ppp-fs-indicator ${fsCls}" title="PPP fairshare ${ad.level_fs.toFixed(2)}">${ad.level_fs.toFixed(1)}</span>
+        ${(() => {
+          const myFs = _myFairshareData?.clusters?.[cn]?.[acct];
+          if (!myFs) return '';
+          const mfCls = myFs.level_fs >= 1.2 ? 'ppp-fs-good' : myFs.level_fs >= 0.8 ? 'ppp-fs-neutral' : 'ppp-fs-low';
+          return `<span class="ppp-my-fs ${mfCls}" title="Your personal fairshare ${myFs.level_fs.toFixed(2)}">you ${myFs.level_fs.toFixed(1)}</span>`;
+        })()}
       </div>`;
     });
 
@@ -1318,6 +1344,7 @@ function _renderHistoryChart(data) {
 }
 
 let _pppOverlayData = null;
+let _myFairshareData = null;
 let _pppOverlayFetching = false;
 
 async function _ensureOverlayData() {
@@ -1330,6 +1357,17 @@ async function _ensureOverlayData() {
   } catch (_) {}
   _pppOverlayFetching = false;
   return _pppOverlayData;
+}
+
+async function _fetchMyFairshare() {
+  try {
+    const res = await fetch('/api/aihub/my_fairshare');
+    const data = await res.json();
+    if (data.status === 'ok') {
+      _myFairshareData = data;
+      if (_pppAllocData) _renderPppAllocations(_pppAllocData);
+    }
+  } catch (_) {}
 }
 
 async function togglePppOverlays() {
@@ -1479,6 +1517,8 @@ function _populateAccountSelect() {
 
 async function initClustersPage() {
   _ensureOverlayData();
+  _fetchMyFairshare();
+  fetchPartitions();
   refreshPppAllocations().then(() => _populateAccountSelect());
   refreshTeamJobs();
   refreshUsageHistory();

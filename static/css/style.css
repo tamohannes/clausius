@@ -2668,6 +2668,17 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   font-family: var(--mono); font-size: 9px; color: var(--muted);
   font-style: italic; margin-left: auto;
 }
+.ppp-card-live {
+  font-family: var(--mono); font-size: 10px; color: var(--muted);
+  margin-bottom: 12px;
+}
+.ppp-idle-ok { color: var(--green); font-weight: 600; }
+.ppp-idle-none { color: var(--red); font-weight: 600; }
+.ppp-my-fs {
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  padding: 1px 5px; border-radius: 3px;
+  flex-shrink: 0;
+}
 .ppp-acct-row {
   display: flex; align-items: center; gap: 10px;
   margin-bottom: 12px;
@@ -3011,6 +3022,18 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
     transparent 2px, transparent 4px
   );
 }
+.ws-idle {
+  font-size: 10px; color: var(--green); font-weight: 600;
+}
+.ws-my-fs {
+  font-size: 10px; font-weight: 600; padding: 1px 5px; border-radius: 3px;
+}
+.ws-fs-good { background: var(--green-bg); color: var(--green); }
+.ws-fs-neutral { background: var(--amber-bg); color: var(--amber); }
+.ws-fs-low { background: var(--red-bg); color: var(--red); }
+.pop-fs-good .ppp-pop-detail { color: var(--green) !important; font-weight: 600; }
+.pop-fs-neutral .ppp-pop-detail { color: var(--amber) !important; font-weight: 600; }
+.pop-fs-low .ppp-pop-detail { color: var(--red) !important; font-weight: 600; }
 .ws-none {
   font-family: var(--mono); font-size: 11px; color: var(--muted);
   padding: 8px 0;

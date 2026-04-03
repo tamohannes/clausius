@@ -1078,6 +1078,7 @@ from .aihub import (
     get_user_breakdown as _aihub_users,
     get_cluster_occupancy as _aihub_occupancy,
     get_team_overlay as _aihub_team_overlay,
+    get_my_fairshare as _aihub_my_fairshare,
 )
 
 
@@ -1135,6 +1136,15 @@ def api_aihub_occupancy():
 def api_aihub_team_overlay():
     try:
         data = _aihub_team_overlay()
+        return jsonify({"status": "ok", **data})
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+
+@api.route("/api/aihub/my_fairshare")
+def api_aihub_my_fairshare():
+    try:
+        data = _aihub_my_fairshare()
         return jsonify({"status": "ok", **data})
     except Exception as exc:
         return jsonify({"status": "error", "error": str(exc)}), 500

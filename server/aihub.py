@@ -591,6 +591,83 @@ def get_team_overlay():
     return data
 
 
+def get_my_fairshare(user=None, accounts=None, clusters=None):
+    """Get per-user fairshare priority across all PPP accounts and clusters.
+
+    Returns the user's personal level_fs and consumption per account per cluster.
+    This is the USER's scheduling priority, not the PPP's.
+    """
+    from .config import DEFAULT_USER
+    user = user or DEFAULT_USER
+    accts = accounts or PPP_ACCOUNTS
+    if not accts:
+        return {"user": user, "clusters": {}}
+
+    cache_key = f"my_fs_{user}"
+    cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
+    if cached is not None:
+        return cached
+
+    os_clusters = _os_cluster_names(clusters)
+
+    query = {
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"s_doc": "account_user_gpus_hourly"}},
+                    {"terms": {"s_account": accts}},
+                    {"term": {"s_user": user}},
+                    {"range": {"ts_created": {
+                        "gte": _date_str(3),
+                        "lte": "now",
+                        "time_zone": "America/Los_Angeles",
+                    }}},
+                ]
+            }
+        },
+        "size": 0,
+        "aggs": {
+            "cluster": {
+                "terms": {"field": "s_cluster", "size": 50},
+                "aggs": {
+                    "account": {
+                        "terms": {"field": "s_account", "size": 20},
+                        "aggs": {
+                            "level_fs": {"avg": {"field": "d_level_fs"}},
+                            "consumed": {"avg": {"field": "l_gpus_consumed"}},
+                            "norm_shares": {"avg": {"field": "d_norm_shares"}},
+                            "norm_usage": {"avg": {"field": "d_norm_usage"}},
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    if os_clusters:
+        query["query"]["bool"]["filter"].insert(0, {"terms": {"s_cluster": os_clusters}})
+
+    resp = _opensearch_query(query)
+    if not resp:
+        return {"user": user, "clusters": {}}
+
+    result = {"user": user, "clusters": {}}
+    for cb in resp.get("aggregations", {}).get("cluster", {}).get("buckets", []):
+        friendly = _friendly_cluster(cb["key"])
+        acct_data = {}
+        for ab in cb.get("account", {}).get("buckets", []):
+            level_fs = ab["level_fs"]["value"] or 0
+            acct_data[ab["key"]] = {
+                "level_fs": round(min(level_fs, 10.0), 3),
+                "consumed": round(ab["consumed"]["value"] or 0),
+            }
+        if acct_data:
+            result["clusters"][friendly] = acct_data
+
+    _cache_set(_aihub_cache, cache_key, result)
+    return result
+
+
 def get_fairshare_for_recommendations(accounts=None):
     """Get a lightweight fairshare snapshot for the recommendation engine.
 
