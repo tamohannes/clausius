@@ -26,7 +26,7 @@ Open [http://localhost:7272](http://localhost:7272)
 
 ![ncluster architecture](docs/architecture.png)
 
-Three-lane SSH connection pool: **primary** (Slurm control), **background** (metadata), **data** (file I/O routed to data-copier nodes with automatic login-node fallback).
+Three-lane SSH connection pool: **primary** (Slurm control), **background** (metadata), **data** (file I/O routed to data-copier nodes with automatic login-node fallback). AI Hub OpenSearch integration for formal GPU allocations and fairshare data.
 
 ## Features
 
@@ -77,10 +77,14 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 - Focus controls shared between tree and graph views
 - Color-coded nodes: neutral for notes, red for plans (matching sidebar)
 
-### Cluster Tools
-- **Cluster Availability**: Cross-cluster GPU utilization from the Science dashboard
-- **Partitions**: Detailed partition data with priority tiers, preemption, queue depth, idle nodes
-- **Submit Advisor**: Recommend best cluster + partition for a job based on node count, time limit, and queue state
+### Compute (GPU Allocations & Cluster Intelligence)
+- **GPU Allocations Dashboard**: Per-cluster cards showing formal PPP allocations, consumption, and fairshare from AI Hub OpenSearch
+- **Stacked usage bars**: Side-by-side segments — your running/pending (accent, striped), team running/pending (orange, striped), PPP non-team (gray) — with toggle controls
+- **"Where to Submit" strip**: Ranked cluster chips scored by team-aware headroom (considers informal team quota, PPP fairshare, and current usage)
+- **Hover popup**: Per-account breakdown with your usage, team, PPP non-team, other PPPs, cluster total, and team alloc
+- **Click-through modal**: Full per-user GPU breakdown with running/pending/CPU counts, sorted by usage
+- **GPU Usage History**: Chart.js time-series of allocation vs consumption per account with 7d/14d/30d range selector
+- **Pending job tooltips**: Fairshare-based wait estimates using AI Hub `level_fs`, plus cross-cluster recommendations filtered by job size and GPU type
 - **Mounts**: SSHFS mount/unmount/remount per cluster; mount-all in parallel with progress; stale mount detection via `/proc/mounts` (never blocks on dead FUSE)
 - **Storage Quotas**: Lustre filesystem and PPP project quotas
 
@@ -110,20 +114,23 @@ Three-lane SSH connection pool: **primary** (Slurm control), **background** (met
 
 ### MCP Server (AI Agent API)
 - Stdio-based MCP server for Cursor and other MCP-compatible agents
-- 31 tools covering every aspect of the dashboard:
+- 35 tools covering every aspect of the dashboard:
 
 | Category | Tools |
 |----------|-------|
+| GPU Allocations | `where_to_submit`, `get_ppp_allocations`, `get_gpu_usage_history` |
 | Jobs | `list_jobs`, `get_job_log`, `get_job_stats`, `list_log_files` |
 | History | `get_history`, `list_projects`, `get_project_jobs` |
 | Actions | `cancel_job`, `cancel_jobs` |
 | Runs | `get_run_info`, `run_script`, `cleanup_history` |
-| Clusters | `get_cluster_availability`, `get_partitions`, `get_partition_summary`, `recommend_submission`, `get_storage_quota` |
+| Clusters | `get_cluster_status`, `get_team_gpu_status`, `get_cluster_availability`, `get_partitions`, `get_partition_summary`, `recommend_submission`, `get_storage_quota` |
 | Mounts | `get_mounts`, `mount_cluster`, `clear_failed`, `clear_completed` |
 | Logbook | `list_logbook_entries`, `read_logbook_entry`, `bulk_read_logbooks`, `create_logbook_entry`, `update_logbook_entry`, `delete_logbook_entry`, `search_logbook`, `upload_logbook_image` |
 
-- `recommend_submission()` — agent asks "where should I submit this job?" and gets ranked cluster+partition suggestions
-- `bulk_read_logbooks()` — fetch all entries across projects in one call
+- `where_to_submit(nodes, gpu_type)` — **primary tool** for "where should I submit this job?" — ranks clusters by team headroom, fairshare, and GPU type match
+- `get_ppp_allocations()` — formal PPP allocations, consumption, fairshare per account per cluster from AI Hub
+- `get_gpu_usage_history()` — daily allocation vs consumption time-series
+- `recommend_submission()` — partition-level ranking with fairshare-aware scoring and PPP account recommendation
 - `run_script()` — execute Python/bash on a cluster and return stdout/stderr
 - Resource: `jobs://summary` — quick text overview of running/pending/failed per cluster
 - No SSH, no DB access — wraps the Flask API cleanly
@@ -189,6 +196,13 @@ Primary configuration file. Editable from the UI Settings panel or directly.
       "mount_paths": ["/lustre/.../users/$USER"]
     }
   },
+  "team": "my-team",
+  "team_members": ["jack", "bob", "gexam"],
+  "ppp_accounts": ["my_ppp_account_1", "my_ppp_account_2"],
+  "team_gpu_allocations": {"my-cluster": 500},
+  "aihub_opensearch_url": "",
+  "dashboard_url": "",
+  "aihub_cache_ttl_sec": 300,
   "log_search_bases": ["/lustre/.../users/$USER"],
   "nemo_run_bases": ["/lustre/.../users/$USER/nemo-run"],
   "mount_lustre_prefixes": ["lustre/fsw/..."],
@@ -203,6 +217,16 @@ Primary configuration file. Editable from the UI Settings panel or directly.
   "backup_max_keep": 7
 }
 ```
+
+| Field | Purpose |
+|-------|---------|
+| `team` | Team name for dashboard integration |
+| `team_members` | List of team member usernames for usage overlay |
+| `ppp_accounts` | Slurm PPP accounts to track across clusters |
+| `team_gpu_allocations` | Informal per-cluster GPU quotas (number or `"any"`) |
+| `aihub_opensearch_url` | OpenSearch endpoint for GPU allocation data |
+| `dashboard_url` | Science dashboard URL for team membership fallback |
+| `aihub_cache_ttl_sec` | Cache TTL for AI Hub queries (default 300s) |
 
 The optional `data_host` routes file-explorer I/O to a data-copier node, reducing login-node load. Falls back to `host` when omitted or unreachable.
 
@@ -276,6 +300,16 @@ Dependency chain auto-detection from run name suffixes:
 | POST | `/api/clear_completed/<cluster>` | Dismiss completed pins |
 | POST | `/api/cleanup` | Delete old history records |
 
+### GPU Allocations (AI Hub)
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/aihub/allocations` | PPP allocations, fairshare, cluster occupancy |
+| GET | `/api/aihub/history?days=&cluster=` | Allocation vs consumption time-series |
+| GET | `/api/aihub/users?account=&cluster=&days=` | Per-user GPU breakdown for an account |
+| GET | `/api/aihub/team_overlay` | Team member usage across all accounts |
+| GET | `/api/team_jobs?cluster=` | Running/pending/dependent jobs per user across PPP accounts |
+
 ### Partitions & Recommendations
 
 | Method | Endpoint | Purpose |
@@ -283,7 +317,7 @@ Dependency chain auto-detection from run name suffixes:
 | GET | `/api/partitions` | Partition data for all clusters |
 | GET | `/api/partitions/<cluster>` | Partition data for one cluster |
 | GET | `/api/partition_summary` | Compact cross-cluster partition overview |
-| POST | `/api/recommend` | Recommend best cluster+partition for a job (JSON body) |
+| POST | `/api/recommend` | Recommend best cluster+partition+account for a job (JSON body) |
 | GET | `/api/storage_quota/<cluster>` | Lustre filesystem and PPP quotas |
 
 ### Mounts & Settings
