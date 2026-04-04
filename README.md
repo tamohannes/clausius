@@ -354,8 +354,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/ncluster
-ExecStart=%h/miniconda3/bin/python %h/ncluster/app.py
+WorkingDirectory=%h/clausius
+ExecStart=%h/miniconda3/bin/python %h/clausius/app.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=10

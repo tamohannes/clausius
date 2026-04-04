@@ -8,7 +8,7 @@ description: Multi-cluster Slurm dashboard and MCP server for monitoring, managi
 > MCP server name: **`user-clausius`**
 > Backend: Flask at `http://localhost:7272`
 > Service: `systemctl --user status clausius.service`
-> Source: `~/ncluster`
+> Source: `~/clausius`
 
 All cluster interactions MUST go through the clausius MCP server. Do NOT write ad-hoc `ssh`, `squeue`, `sacct`, `scontrol`, or `scancel` commands.
 
@@ -202,6 +202,15 @@ links (`[text](url)`), and `@run-name` job references. Use `upload_logbook_image
 then embed the returned URL in the body. Use code blocks for system prompts, JSON, configs.
 Use blockquotes for model outputs or external sources. Titles must be descriptive (no dates).
 
+**Figure captions**: Every figure MUST have a paper-style caption below it using bold italic.
+Number figures sequentially within the entry. The caption should describe what the figure
+shows and highlight the key takeaway, not just repeat the title.
+
+```markdown
+![](/api/logbook/my-project/images/plot.png)
+***Figure 1.** Accuracy vs compute budget across 5 seeds. SciPythonTool (green) matches no-tool baseline at 3x the compute, but eliminates 94% of sandbox errors.*
+```
+
 ---
 
 ## Do NOT
@@ -217,7 +226,7 @@ Only fall back to SSH if debugging the clausius app itself or the user explicitl
 
 ## Modifying the App
 
-Source lives at `~/ncluster`. After changes to `server/`, `static/`, `templates/`, `app.py`, or `mcp_server.py`:
+Source lives at `~/clausius`. After changes to `server/`, `static/`, `templates/`, `app.py`, or `mcp_server.py`:
 
 ```bash
 systemctl --user restart clausius.service
