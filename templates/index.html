@@ -6,6 +6,8 @@
 <title>clausius</title>
 <link rel="icon" type="image/svg+xml" id="favicon" href="{{ url_for('static', filename='icon.svg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
 <script>
 (function(){var t=localStorage.getItem('clausius.theme')||'system';var d=(t==='dark'||(t==='system'&&matchMedia('(prefers-color-scheme:dark)').matches))?'dark':'light';document.documentElement.setAttribute('data-theme',d)})();
 </script>
@@ -180,24 +182,42 @@
                 <div class="clusters-section-sub">Formal PPP allocations, consumption, and fairshare across clusters</div>
                 <div class="wds-info-popover" id="wds-info-popover">
                   <div class="wds-info-close" onclick="toggleWdsInfo(event)">&times;</div>
-                  <div class="wds-info-title">WDS Score Formula</div>
-                  <div class="wds-info-desc">The <b>Where Do I Submit</b> score ranks clusters from 0–100 based on how likely your job is to start quickly.</div>
-                  <div class="wds-info-formula">
-                    WDS = 100 &times; <var>R</var> &times; <var>P</var> &times; <var>M</var> &times; <var>T</var> &times; <var>O</var>
+                  <div class="wds-info-title">WDS Score</div>
+                  <div class="wds-info-desc">The <b>Where Do I Submit</b> score ranks clusters 0–100 by how quickly your job will start.</div>
+                  <div class="wds-info-formula" data-katex="\text{WDS} = 100 \;\cdot\; R \;\cdot\; P \;\cdot\; M \;\cdot\; T \;\cdot\; O"></div>
+                  <div class="wds-info-grid">
+                    <div class="wds-info-card">
+                      <div class="wds-info-card-head"><span class="wds-info-label">Resource gate</span></div>
+                      <div class="wds-info-math" data-katex="R = \min\!\left(1,\;\frac{\text{capacity}}{\text{GPUs}},\;\frac{\text{idle nodes}}{\text{nodes}}\right)"></div>
+                    </div>
+                    <div class="wds-info-card">
+                      <div class="wds-info-card-head"><span class="wds-info-label">Priority blend</span></div>
+                      <div class="wds-info-math" data-katex="P = 0.55\,f_{\text{me}} + 0.20\,f_{\text{ppp}} + 0.25\,Q"></div>
+                    </div>
+                    <div class="wds-info-card">
+                      <div class="wds-info-card-head"><span class="wds-info-label">Occupancy</span></div>
+                      <div class="wds-info-math" data-katex="O = 1.15 - 0.30 \cdot \frac{\text{occ\%}}{100}"></div>
+                      <div class="wds-info-dim">0.85 (full) → 1.15 (empty)</div>
+                    </div>
+                    <div class="wds-info-card">
+                      <div class="wds-info-card-head"><span class="wds-info-label">Machine &amp; Team</span></div>
+                      <div class="wds-info-math" data-katex="M = \begin{cases} 1.0 & \text{GPU match} \\ 0.85 & \text{else} \end{cases} \quad T = \begin{cases} 0.7 & \text{over quota} \\ 1.0 & \text{else} \end{cases}"></div>
+                    </div>
                   </div>
-                  <table class="wds-info-table">
-                    <tr><td class="wds-info-var"><var>R</var></td><td><b>Resource gate</b><br>min(1, capacity / GPUs, idle_nodes / nodes)</td></tr>
-                    <tr><td class="wds-info-var"><var>P</var></td><td><b>Priority blend</b><br>0.55 &middot; <var>fs<sub>me</sub></var> + 0.20 &middot; <var>fs<sub>ppp</sub></var> + 0.25 &middot; <var>Q</var></td></tr>
-                    <tr><td class="wds-info-var"><var>M</var></td><td><b>Machine match</b><br>1.0 if preferred GPU type, 0.85 otherwise</td></tr>
-                    <tr><td class="wds-info-var"><var>T</var></td><td><b>Team penalty</b><br>0.7 if team over quota, 1.0 otherwise</td></tr>
-                    <tr><td class="wds-info-var"><var>O</var></td><td><b>Occupancy factor</b><br>1.15 &minus; 0.30 &times; occupancy%<br><span class="wds-info-dim">ranges 0.85 (full) to 1.15 (empty)</span></td></tr>
-                  </table>
-                  <div class="wds-info-section">Sub-components</div>
-                  <table class="wds-info-table">
-                    <tr><td class="wds-info-var"><var>fs<sub>me</sub></var></td><td>min(my_level_fs / 1.5, 1)<br><span class="wds-info-dim">falls back to PPP fairshare if data missing</span></td></tr>
-                    <tr><td class="wds-info-var"><var>fs<sub>ppp</sub></var></td><td>min(ppp_level_fs / 1.5, 1)</td></tr>
-                    <tr><td class="wds-info-var"><var>Q</var></td><td>1 &minus; log(1 + pending/idle) / log(51)<br><span class="wds-info-dim">0 = heavily queued, 1 = no queue</span></td></tr>
-                  </table>
+                  <div class="wds-info-section">Where</div>
+                  <div class="wds-info-grid">
+                    <div class="wds-info-card">
+                      <div class="wds-info-math" data-katex="f_{\text{me}} = \min\!\left(\frac{\text{my\_level\_fs}}{1.5},\;1\right)"></div>
+                      <div class="wds-info-dim">Your personal fairshare; falls back to PPP if missing</div>
+                    </div>
+                    <div class="wds-info-card">
+                      <div class="wds-info-math" data-katex="f_{\text{ppp}} = \min\!\left(\frac{\text{ppp\_level\_fs}}{1.5},\;1\right)"></div>
+                    </div>
+                    <div class="wds-info-card">
+                      <div class="wds-info-math" data-katex="Q = 1 - \frac{\ln\!\left(1 + \dfrac{\text{pending}}{\text{idle}}\right)}{\ln(51)}"></div>
+                      <div class="wds-info-dim">0 = heavily queued, 1 = no queue</div>
+                    </div>
+                  </div>
                 </div>
               </div>
               <button class="btn" onclick="refreshPppAllocations()">↻ refresh</button>

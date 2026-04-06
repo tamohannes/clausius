@@ -1021,6 +1021,12 @@ function toggleWdsInfo(e) {
   const show = !pop.classList.contains('visible');
   pop.classList.toggle('visible', show);
   if (show) {
+    if (!pop._katexDone && typeof katex !== 'undefined') {
+      pop.querySelectorAll('[data-katex]').forEach(el => {
+        katex.render(el.dataset.katex, el, { displayMode: true, throwOnError: false });
+      });
+      pop._katexDone = true;
+    }
     const close = (ev) => {
       if (!pop.contains(ev.target) && !ev.target.classList.contains('wds-info-btn')) {
         pop.classList.remove('visible');
