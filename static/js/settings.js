@@ -60,6 +60,7 @@ const SHORTCUT_DEFAULTS = {
   nextTab:       { label: 'Next tab',          key: ']',   meta: true,  ctrl: false, shift: false },
   prevTab:       { label: 'Previous tab',      key: '[',   meta: true,  ctrl: false, shift: false },
   refreshLive:   { label: 'Refresh live data', key: 'r',   meta: true,  ctrl: false, shift: true  },
+  exportEntry:   { label: 'Export entry',      key: 's',   meta: true,  ctrl: false, shift: true  },
 };
 
 let _shortcuts = {};

@@ -14,6 +14,7 @@ from server.wds import wds_snapshot_loop
 from server.routes import api
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 app.register_blueprint(api)
 
 if __name__ == "__main__":

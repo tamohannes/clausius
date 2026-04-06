@@ -8,6 +8,7 @@ let _lbHistory = [];
 let _lbRunNames = [];
 let _lbSuggestTarget = null;
 let _lbSuggestStart = -1;
+let _lbCurrentEntry = null;
 const LB_SIDEBAR_WIDTH_KEY = 'clausius.lbSidebarWidth';
 const LB_SIDEBAR_MIN = 200;
 const LB_SIDEBAR_MAX = 600;
@@ -283,6 +284,7 @@ async function openLogbookEntry(entryId, opts = {}) {
     const res = await fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${entryId}`);
     const entry = await res.json();
     if (entry.status === 'error') { toast(entry.error, 'error'); return; }
+    _lbCurrentEntry = entry;
     const title = (entry.title || '').replace(/</g, '&lt;');
     const bodyHtml = _renderLogbookMarkdown(entry.body || '');
     const created = _formatDate(entry.created_at);
@@ -297,6 +299,7 @@ async function openLogbookEntry(entryId, opts = {}) {
           <button class="btn" onclick="openEntryGraph(${entry.id})" title="Graph around this entry">graph</button>
           ${typeBadge}
           <span style="flex:1"></span>
+          <span class="lb-export-hint" onclick="exportEntryHtml()" title="Export as HTML — then ⌘S to save">${_exportShortcutLabel()} export</span>
           <button class="btn" onclick="editLogbookEntry(${entry.id})">edit</button>
           <button class="btn" onclick="deleteLogbookEntry(${entry.id})" style="color:var(--red)">delete</button>
         </div>
@@ -320,6 +323,216 @@ async function openLogbookEntry(entryId, opts = {}) {
     }
   } catch (e) {
     toast('Failed to load entry', 'error');
+  }
+}
+
+
+// ── Export ───────────────────────────────────────────────────────────────────
+
+function _exportShortcutLabel() {
+  const s = typeof getShortcut === 'function' ? getShortcut('exportEntry') : null;
+  if (!s) return '<kbd>⌘</kbd><kbd>⇧</kbd><kbd>S</kbd>';
+  const parts = [];
+  if (s.meta) parts.push(navigator.platform.includes('Mac') ? '⌘' : 'Ctrl');
+  if (s.shift) parts.push('⇧');
+  let k = s.key;
+  if (k.length === 1) k = k.toUpperCase();
+  parts.push(k);
+  return parts.map(p => `<kbd>${p}</kbd>`).join('');
+}
+
+function _exportHintText() {
+  const s = typeof getShortcut === 'function' ? getShortcut('exportEntry') : null;
+  if (!s) return '<b>⌘⇧S</b>';
+  const parts = [];
+  if (s.meta) parts.push(navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+');
+  if (s.shift) parts.push('⇧');
+  let k = s.key;
+  if (k.length === 1) k = k.toUpperCase();
+  parts.push(k);
+  return `<b>${parts.join('')}</b>`;
+}
+
+function _exportSaveKeyCond() {
+  const s = typeof getShortcut === 'function' ? getShortcut('exportEntry') : null;
+  const key = s ? s.key.toLowerCase() : 's';
+  const meta = s ? !!s.meta : true;
+  const shift = s ? !!s.shift : true;
+  const parts = [`e.key.toLowerCase()==='${key}'`];
+  if (meta) parts.push('(e.metaKey||e.ctrlKey)');
+  if (shift) parts.push('e.shiftKey');
+  else parts.push('!e.shiftKey');
+  return parts.join('&&');
+}
+
+function _exportSlug(title) {
+  return (title || 'entry').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').substring(0, 40);
+}
+
+async function exportEntryHtml() {
+  if (!_lbCurrentEntry) { toast('No entry loaded', 'error'); return; }
+  const e = _lbCurrentEntry;
+  toast('Preparing HTML export…');
+
+  let bodyHtml = _renderLogbookMarkdown(e.body || '');
+
+  const imgRegex = /src="(\/api\/logbook\/[^"]+)"/g;
+  const urls = new Set();
+  let m;
+  while ((m = imgRegex.exec(bodyHtml)) !== null) urls.add(m[1]);
+
+  const dataUris = {};
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url);
+      const blob = await resp.blob();
+      const reader = new FileReader();
+      const dataUri = await new Promise((resolve) => {
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(blob);
+      });
+      dataUris[url] = dataUri;
+    } catch (_) {}
+  }
+  for (const [url, dataUri] of Object.entries(dataUris)) {
+    bodyHtml = bodyHtml.split(url).join(dataUri);
+  }
+
+  bodyHtml = bodyHtml.replace(/<table\b/g, '<div class="table-wrap"><table')
+                     .replace(/<\/table>/g, '</table></div>');
+
+  const created = _formatDate(e.created_at);
+  const edited = e.created_at !== e.edited_at ? ` · Edited ${_formatDate(e.edited_at)}` : '';
+  const typeBadge = e.entry_type === 'plan' ? '<span class="badge badge-plan">plan</span>' : '';
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${(e.title || '').replace(/</g, '&lt;')}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #ffffff; --surface: #f5f5f7; --border: #e4e4ec;
+  --text: #18181f; --muted: #9090aa; --accent: #2BA298;
+  --code-bg: #f5f5f7;
+}
+[data-theme="dark"] {
+  --bg: #1a1a2e; --surface: #22223a; --border: #33335a;
+  --text: #e4e4f0; --muted: #8888aa; --accent: #5ddebe;
+  --code-bg: #2a2a44;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: 'Inter', sans-serif; font-size: 14px; line-height: 1.7;
+  color: var(--text); background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+.container { max-width: 720px; margin: 0 auto; padding: 48px 24px 80px; }
+.meta { font-size: 12px; color: var(--muted); margin-bottom: 32px; }
+.badge { font-size: 10px; font-weight: 600; padding: 2px 8px; border-radius: 4px; margin-left: 8px; }
+.badge-plan { background: #fef3c7; color: #b45309; }
+[data-theme="dark"] .badge-plan { background: #3d2e00; color: #fbbf24; }
+h1 { font-size: 28px; font-weight: 700; line-height: 1.3; margin-bottom: 8px; letter-spacing: -0.02em; }
+h2 { font-size: 20px; font-weight: 700; margin: 36px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+h3 { font-size: 16px; font-weight: 600; margin: 24px 0 8px; }
+p { margin: 10px 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+strong { font-weight: 600; }
+ul, ol { margin: 10px 0; padding-left: 24px; }
+li { margin: 4px 0; }
+blockquote {
+  border-left: 3px solid var(--accent); padding: 2px 0 2px 16px;
+  margin: 12px 0; color: var(--muted); font-style: italic;
+}
+pre {
+  background: var(--code-bg); padding: 14px 18px; border-radius: 8px;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  overflow-x: auto; margin: 14px 0; line-height: 1.6;
+}
+code {
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  background: var(--code-bg); padding: 2px 5px; border-radius: 4px;
+}
+pre code { background: none; padding: 0; }
+.table-wrap {
+  overflow-x: auto; margin: 16px 0; border-radius: 8px;
+  border: 1px solid var(--border);
+}
+table {
+  width: 100%; border-collapse: collapse;
+  font-size: 13px; white-space: nowrap;
+}
+th, td { padding: 8px 12px; border: 1px solid var(--border); text-align: left; }
+th { background: var(--surface); font-weight: 600; }
+figure { margin: 20px 0; text-align: center; }
+figure img { max-width: 100%; border-radius: 8px; }
+figcaption {
+  font-size: 12px; color: var(--muted); margin-top: 8px;
+  line-height: 1.5; text-align: left;
+}
+figcaption strong { color: var(--text); font-weight: 600; }
+.save-hint {
+  position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+  font-family: 'Inter', sans-serif; font-size: 12px; color: var(--muted);
+  background: var(--surface); border: 1px solid var(--border);
+  padding: 6px 16px; border-radius: 20px; z-index: 100;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08); opacity: 1;
+  transition: opacity 0.5s; cursor: pointer;
+}
+.save-hint:hover { color: var(--text); border-color: var(--accent); }
+.theme-toggle {
+  position: fixed; top: 16px; right: 16px; z-index: 100;
+  width: 36px; height: 36px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font-size: 16px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.2s, border-color 0.2s;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+}
+.theme-toggle:hover { border-color: var(--accent); }
+@media print { .theme-toggle, .save-hint { display: none; } }
+</style>
+</head>
+<body>
+<div class="save-hint" id="save-hint">${_exportHintText()} to save</div>
+<button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme" id="theme-btn">☀️</button>
+<div class="container">
+  <h1>${(e.title || '').replace(/</g, '&lt;')} ${typeBadge}</h1>
+  <div class="meta">${_lbProject} · #${e.id} · ${created}${edited}</div>
+  ${bodyHtml}
+</div>
+<script>
+(function(){
+  var pref = window.matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', pref);
+  updateIcon();
+  setTimeout(function(){ var h = document.getElementById('save-hint'); if(h) h.style.opacity='0'; }, 4000);
+  setTimeout(function(){ var h = document.getElementById('save-hint'); if(h) h.remove(); }, 4500);
+})();
+function toggleTheme() {
+  var t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', t);
+  updateIcon();
+}
+function updateIcon() {
+  var btn = document.getElementById('theme-btn');
+  if (btn) btn.textContent = document.documentElement.getAttribute('data-theme') === 'dark' ? '☀️' : '🌙';
+}
+</script>
+</body>
+</html>`;
+
+  const win = window.open('', '_blank');
+  if (win) {
+    win.document.write(html);
+    win.document.close();
+    toast('Opened HTML export in new tab');
+  } else {
+    toast('Popup blocked — allow popups for this site', 'error');
   }
 }
 

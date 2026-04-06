@@ -205,6 +205,7 @@ document.addEventListener('keydown', e => {
   if (matchesShortcut(e, 'closeTab')) { e.preventDefault(); closeAppTab(_activeTabId); return; }
   if (matchesShortcut(e, 'prevTab')) { e.preventDefault(); cycleAppTab(-1); return; }
   if (matchesShortcut(e, 'nextTab')) { e.preventDefault(); cycleAppTab(1); return; }
+  if (matchesShortcut(e, 'exportEntry')) { e.preventDefault(); if (typeof exportEntryHtml === 'function') exportEntryHtml(); return; }
 });
 
 function setupSidebarResizer() {

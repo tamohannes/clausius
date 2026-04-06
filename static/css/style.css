@@ -1083,6 +1083,18 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .lb-detail { max-width: 800px; margin: 0 auto; }
 .lb-main-plan { background: color-mix(in srgb, var(--amber-bg) 15%, var(--bg)); }
 .lb-detail-actions { display: flex; gap: 6px; margin-bottom: 16px; align-items: center; }
+.lb-export-hint {
+  font-family: var(--sans); font-size: 10px; color: var(--muted);
+  cursor: pointer; display: inline-flex; align-items: center; gap: 4px;
+  margin-right: 4px; transition: color 0.15s;
+}
+.lb-export-hint:hover { color: var(--accent); }
+.lb-export-hint kbd {
+  display: inline-block; font-family: var(--sans); font-size: 9px;
+  font-weight: 500; padding: 1px 4px; border-radius: 3px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--muted); line-height: 1.4;
+}
 .lb-detail-title {
   font-family: var(--mono); font-size: 20px; font-weight: 700;
   color: var(--text); margin: 0 0 8px 0; line-height: 1.3;
@@ -1174,8 +1186,11 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .logbook-entry-content ul { margin: 4px 0; padding-left: 18px; }
 .logbook-entry-content pre { background: var(--surface); padding: 6px 8px; border-radius: 4px; font-size: 10px; overflow-x: auto; }
 .md-inline-code { background: var(--surface); padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+.md-table-wrap {
+  overflow-x: auto; margin: 8px 0; border-radius: 6px;
+}
 .md-table {
-  width: 100%; border-collapse: collapse; margin: 8px 0;
+  width: 100%; border-collapse: collapse;
   font-family: var(--mono); font-size: 11px;
 }
 .md-table th, .md-table td {

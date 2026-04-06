@@ -545,7 +545,7 @@ function _renderTableRows(tableLines, tblNum) {
     html += parseRow(tableLines[i], 'td');
   }
   html += '</tbody></table>';
-  return html;
+  return `<div class="md-table-wrap">${html}</div>`;
 }
 
 function _isFigureCaption(text) {

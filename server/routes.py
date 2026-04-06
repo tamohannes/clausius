@@ -1274,6 +1274,41 @@ def api_logbook_serve_image(project, filename):
     return send_file(path)
 
 
+_export_store = {}
+
+@api.route("/api/logbook/export", methods=["POST"])
+def api_logbook_export_create():
+    import uuid, time
+    payload = request.get_json(silent=True) or {}
+    content = payload.get("content", "")
+    filename = payload.get("filename", "export.html")
+    mime = payload.get("mime", "text/html")
+    if not content:
+        return jsonify({"status": "error", "error": "No content"}), 400
+    token = uuid.uuid4().hex[:16]
+    _export_store[token] = {"content": content, "filename": filename, "mime": mime, "ts": time.time()}
+    for k in list(_export_store):
+        if time.time() - _export_store[k]["ts"] > 120:
+            del _export_store[k]
+    return jsonify({"status": "ok", "token": token})
+
+
+@api.route("/api/logbook/export/<token>")
+def api_logbook_export_download(token):
+    from flask import Response
+    entry = _export_store.pop(token, None)
+    if not entry:
+        return jsonify({"status": "error", "error": "Export expired or not found"}), 404
+    return Response(
+        entry["content"],
+        mimetype="application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{entry["filename"]}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @api.route("/api/logbook/<project>/map")
 def api_logbook_map(project):
     con = get_db()
