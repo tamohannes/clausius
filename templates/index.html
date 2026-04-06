@@ -176,8 +176,29 @@
           <div class="clusters-section">
             <div class="clusters-section-head">
               <div>
-                <div class="clusters-section-title">GPU Allocations</div>
+                <div class="clusters-section-title">GPU Allocations <button class="wds-info-btn" onclick="toggleWdsInfo(event)" title="How is the WDS score calculated?">i</button></div>
                 <div class="clusters-section-sub">Formal PPP allocations, consumption, and fairshare across clusters</div>
+                <div class="wds-info-popover" id="wds-info-popover">
+                  <div class="wds-info-close" onclick="toggleWdsInfo(event)">&times;</div>
+                  <div class="wds-info-title">WDS Score Formula</div>
+                  <div class="wds-info-desc">The <b>Where Do I Submit</b> score ranks clusters from 0–100 based on how likely your job is to start quickly.</div>
+                  <div class="wds-info-formula">
+                    WDS = 100 &times; <var>R</var> &times; <var>P</var> &times; <var>M</var> &times; <var>T</var> &times; <var>O</var>
+                  </div>
+                  <table class="wds-info-table">
+                    <tr><td class="wds-info-var"><var>R</var></td><td><b>Resource gate</b><br>min(1, capacity / GPUs, idle_nodes / nodes)</td></tr>
+                    <tr><td class="wds-info-var"><var>P</var></td><td><b>Priority blend</b><br>0.55 &middot; <var>fs<sub>me</sub></var> + 0.20 &middot; <var>fs<sub>ppp</sub></var> + 0.25 &middot; <var>Q</var></td></tr>
+                    <tr><td class="wds-info-var"><var>M</var></td><td><b>Machine match</b><br>1.0 if preferred GPU type, 0.85 otherwise</td></tr>
+                    <tr><td class="wds-info-var"><var>T</var></td><td><b>Team penalty</b><br>0.7 if team over quota, 1.0 otherwise</td></tr>
+                    <tr><td class="wds-info-var"><var>O</var></td><td><b>Occupancy factor</b><br>1.15 &minus; 0.30 &times; occupancy%<br><span class="wds-info-dim">ranges 0.85 (full) to 1.15 (empty)</span></td></tr>
+                  </table>
+                  <div class="wds-info-section">Sub-components</div>
+                  <table class="wds-info-table">
+                    <tr><td class="wds-info-var"><var>fs<sub>me</sub></var></td><td>min(my_level_fs / 1.5, 1)<br><span class="wds-info-dim">falls back to PPP fairshare if data missing</span></td></tr>
+                    <tr><td class="wds-info-var"><var>fs<sub>ppp</sub></var></td><td>min(ppp_level_fs / 1.5, 1)</td></tr>
+                    <tr><td class="wds-info-var"><var>Q</var></td><td>1 &minus; log(1 + pending/idle) / log(51)<br><span class="wds-info-dim">0 = heavily queued, 1 = no queue</span></td></tr>
+                  </table>
+                </div>
               </div>
               <button class="btn" onclick="refreshPppAllocations()">↻ refresh</button>
               <div class="wds-size-controls">

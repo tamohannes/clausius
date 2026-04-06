@@ -1014,6 +1014,23 @@ function onWdsSizeChange() {
   if (_pppAllocData) _renderPppAllocations(_pppAllocData);
 }
 
+function toggleWdsInfo(e) {
+  e.stopPropagation();
+  const pop = document.getElementById('wds-info-popover');
+  if (!pop) return;
+  const show = !pop.classList.contains('visible');
+  pop.classList.toggle('visible', show);
+  if (show) {
+    const close = (ev) => {
+      if (!pop.contains(ev.target) && !ev.target.classList.contains('wds-info-btn')) {
+        pop.classList.remove('visible');
+        document.removeEventListener('click', close);
+      }
+    };
+    setTimeout(() => document.addEventListener('click', close), 0);
+  }
+}
+
 function _clusterSubmitScore(cd, cn) {
   const bc = cd.best_capacity || {};
   const bp = cd.best_priority || {};
