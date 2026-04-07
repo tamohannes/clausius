@@ -12,7 +12,7 @@ DEFAULT_SSH_KEY = os.path.expanduser(
     os.environ.get("CLAUSIUS_SSH_KEY", "~/.ssh/id_ed25519")
 )
 DB_PATH = os.path.join(PROJECT_ROOT, "data", "history.db")
-SSH_TIMEOUT = 8
+SSH_TIMEOUT = 5
 CACHE_FRESH_SEC = 30
 STATS_INTERVAL_SEC = 1800
 BACKUP_INTERVAL_HOURS = 24
@@ -127,13 +127,32 @@ def _load_mount_remote_map():
     return result
 
 
+def _load_mount_aliases():
+    """Build alias mapping: cluster -> list of (alias_prefix, mount_index).
+
+    mount_aliases maps symlink paths on the cluster to the mount index they
+    resolve to.  E.g. {"hsg": [("/lustre/fsw/.../htamoyan", 0)]} means that
+    remote paths starting with that prefix should use mount root 0.
+    """
+    result = {}
+    for name, ccfg in _CONFIG.get("clusters", {}).items():
+        aliases = ccfg.get("mount_aliases", {})
+        if aliases:
+            result[name] = [
+                (p.replace("$USER", DEFAULT_USER), int(idx))
+                for p, idx in aliases.items()
+            ]
+    return result
+
+
 MOUNT_MAP = _load_mount_map()
 MOUNT_REMOTE_MAP = _load_mount_remote_map()
+MOUNT_ALIASES = _load_mount_aliases()
 MOUNT_SCRIPT_PATH = os.path.join(APP_ROOT, "scripts", "sshfs_logs.sh")
 
 STATE_ORDER = {"RUNNING": 0, "COMPLETING": 1, "PENDING": 2, "FAILED": 3, "CANCELLED": 4}
-SQUEUE_FMT = "%i|%j|%T|%r|%M|%l|%D|%C|%b|%P|%V|%S|%E"
-SQUEUE_HDR = ["jobid", "name", "state", "reason", "elapsed", "timelimit", "nodes", "cpus", "gres", "partition", "submitted", "started", "dependency"]
+SQUEUE_FMT = "%i|%j|%T|%r|%M|%l|%D|%C|%b|%P|%V|%S|%E|%N"
+SQUEUE_HDR = ["jobid", "name", "state", "reason", "elapsed", "timelimit", "nodes", "cpus", "gres", "partition", "submitted", "started", "dependency", "node_list"]
 
 # In-memory caches
 _cache_lock = threading.Lock()
@@ -339,7 +358,7 @@ def reload_config(new_cfg):
     pf = new_cfg.get("local_process_filters", {})
     LOCAL_PROC_INCLUDE = pf.get("include", [])
     LOCAL_PROC_EXCLUDE = pf.get("exclude", [])
-    SSH_TIMEOUT = new_cfg.get("ssh_timeout", 8)
+    SSH_TIMEOUT = new_cfg.get("ssh_timeout", 5)
     CACHE_FRESH_SEC = new_cfg.get("cache_fresh_sec", 30)
     STATS_INTERVAL_SEC = new_cfg.get("stats_interval_sec", 1800)
     BACKUP_INTERVAL_HOURS = new_cfg.get("backup_interval_hours", 24)

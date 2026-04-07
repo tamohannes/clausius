@@ -206,6 +206,7 @@ document.addEventListener('keydown', e => {
   if (matchesShortcut(e, 'prevTab')) { e.preventDefault(); cycleAppTab(-1); return; }
   if (matchesShortcut(e, 'nextTab')) { e.preventDefault(); cycleAppTab(1); return; }
   if (matchesShortcut(e, 'exportEntry')) { e.preventDefault(); if (typeof exportEntryHtml === 'function') exportEntryHtml(); return; }
+  if (matchesShortcut(e, 'goBack') && currentTab === 'logbook') { e.preventDefault(); if (typeof _lbGoBack === 'function') _lbGoBack(); return; }
 });
 
 function setupSidebarResizer() {
@@ -365,7 +366,7 @@ function renderCard(name, data) {
 
   let body = '';
   if (isErr) {
-    body = `<div class="err-msg">⚠ ${data.error}<button class="btn" style="margin-left:10px" onclick="refreshCluster('${name}')">retry</button></div>`;
+    body = `<div class="err-msg">⚠ ${data.error}<button class="btn" style="margin-left:10px" onclick="refreshCluster('${name}',true)">retry</button></div>`;
   } else if (jobs.length === 0) {
     body = `<div class="no-jobs">no active jobs</div>`;
   } else {
@@ -544,7 +545,7 @@ function renderCard(name, data) {
         <span class="job-count-text">${jobCountText}</span>
         ${mountBadge}
         <div class="card-actions">
-          <button class="icon-btn" onclick="refreshCluster('${name}')">↻</button>
+          <button class="icon-btn" onclick="refreshCluster('${name}',true)">↻</button>
           ${mountBtn}
           <button class="icon-btn" onclick="showClusterHistory('${name}')">history</button>
           ${clearCompletedBtn}
@@ -774,24 +775,23 @@ async function fetchAll() {
     });
   }
 
-  // 1) Try cached data — only render if it's reasonably fresh.
-  let usedCache = false;
+  // 1) Always render cached data immediately (even if stale — better than empty).
   try {
     const res = await fetch('/api/jobs');
     const cached = await res.json();
-    if (_isCacheFresh(cached)) {
+    const hasData = Object.values(cached).some(d => d.updated);
+    if (hasData) {
       allData = cached;
       _fillMissing();
       _renderAll();
-      usedCache = true;
     }
   } catch (e) {
     toast('Failed to fetch jobs', 'error');
   }
 
-  if (!usedCache && !grid.children.length) _showLoadingSkeleton();
+  if (!Object.keys(allData).length && !grid.children.length) _showLoadingSkeleton();
 
-  // 2) Refresh each cluster in parallel; update cards as responses arrive.
+  // 2) Refresh each cluster in parallel; cards update as responses arrive.
   grid.classList.add('grid-loading');
   const barTimeout = setTimeout(() => grid.classList.remove('grid-loading'), 3000);
   await _refreshAllClusters();
@@ -812,7 +812,11 @@ async function _refreshClusters(names) {
     fetch(`/api/jobs/${name}`)
       .then(r => r.json())
       .then(data => {
-        allData[name] = data;
+        const prev = allData[name];
+        const prevOk = prev && prev.status === 'ok' && prev.jobs && prev.jobs.length;
+        if (data.status === 'ok' || !prevOk) {
+          allData[name] = data;
+        }
         _fillMissing();
         _renderAll();
       })
@@ -854,7 +858,7 @@ function _attachPendingTooltips() {
   });
 }
 
-async function refreshCluster(name) {
+async function refreshCluster(name, force) {
   const grid = document.getElementById('grid');
   const card = document.getElementById(`card-${name}`);
   if (card) {
@@ -863,9 +867,12 @@ async function refreshCluster(name) {
   }
   grid.classList.add('grid-loading');
   try {
-    const res = await fetch(`/api/jobs/${name}`);
+    const url = force ? `/api/jobs/${name}?force=1` : `/api/jobs/${name}`;
+    const res = await fetch(url);
     const data = await res.json();
-    allData[name] = data;
+    if (force || data.status === 'ok') {
+      allData[name] = data;
+    }
     _renderAll();
     prefetchAndUpdateProgress({ [name]: data });
   } catch (e) {

@@ -319,11 +319,58 @@ def _db_log_path(cluster_name, job_id):
     return ""
 
 
+def _try_local_discovery(cluster_name, job_id, db_path):
+    """Try to discover log files from the local mount without SSH.
+
+    If the log directory from the DB path is accessible via mount, list
+    files locally. Returns None if mount is unavailable or no files found.
+    """
+    if not db_path:
+        return None
+    logdir = os.path.dirname(db_path)
+    if not logdir:
+        return None
+    mounted_dir = resolve_mounted_path(cluster_name, logdir, want_dir=True)
+    if not mounted_dir or not os.path.isdir(mounted_dir):
+        return None
+
+    ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
+    allowed = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
+    sid = str(job_id)
+    files = []
+    jobid_files = []
+    try:
+        for name in sorted(os.listdir(mounted_dir)):
+            if sid not in name:
+                continue
+            fpath = os.path.join(logdir, name)
+            local = os.path.join(mounted_dir, name)
+            if not os.path.isfile(local):
+                continue
+            if not name.lower().endswith(allowed):
+                continue
+            entry = {"label": label_log(name), "path": fpath}
+            files.append(entry)
+            jobid_files.append(entry)
+    except OSError:
+        return None
+
+    if not files:
+        return None
+    files.sort(key=lambda f: ORDER.get(f["label"], 10))
+    dirs = _derive_result_dirs(jobid_files, cluster_name)
+    return {"files": files, "dirs": dirs}
+
+
 def get_job_log_files(cluster_name, job_id):
     if cluster_name == "local":
         return local_job_log_files(job_id)
 
     db_path = _db_log_path(cluster_name, job_id)
+
+    local = _try_local_discovery(cluster_name, job_id, db_path)
+    if local:
+        return local
     db_logdir_clause = ""
     if db_path:
         db_logdir = os.path.dirname(db_path).replace("'", "'\\''")

@@ -9,6 +9,7 @@ import logging
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .config import CLUSTERS
 from .ssh import ssh_run_with_timeout
@@ -270,16 +271,58 @@ def get_partitions(cluster_name, force=False):
 def get_all_partitions(force=False):
     """Return partition data for all configured clusters.
 
-    Fetches sequentially (each call ~2s).  Returns {cluster: [partitions]}.
+    Fetches in parallel (ThreadPoolExecutor).  Returns {cluster: [partitions]}.
     """
+    names = [n for n in CLUSTERS if n != "local"]
+    if not names:
+        return {}
     result = {}
-    for name in CLUSTERS:
-        if name == "local":
-            continue
-        data = get_partitions(name, force=force)
-        if data is not None:
-            result[name] = data
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        futures = {pool.submit(get_partitions, n, force=force): n for n in names}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                data = fut.result()
+                if data is not None:
+                    result[name] = data
+            except Exception:
+                pass
     return result
+
+
+def get_all_partitions_cached():
+    """Return whatever partition data is in cache right now (no SSH).
+
+    Kicks off a background refresh for stale clusters so the next call
+    gets fresh data.
+    """
+    names = [n for n in CLUSTERS if n != "local"]
+    result = {}
+    stale = []
+    now = time.monotonic()
+    with _lock:
+        for n in names:
+            rec = _cache.get(n)
+            if rec:
+                result[n] = rec["data"]
+                if (now - rec["ts"]) >= PARTITION_CACHE_TTL_SEC:
+                    stale.append(n)
+            else:
+                stale.append(n)
+    if stale:
+        threading.Thread(target=_refresh_stale, args=(stale,), daemon=True).start()
+    return result
+
+
+def _refresh_stale(names):
+    """Background refresh for stale partition caches."""
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        futs = {pool.submit(get_partitions, n): n for n in names}
+        for fut in as_completed(futs):
+            try:
+                fut.result()
+            except Exception:
+                pass
 
 
 def _estimate_partition_wait(part):
@@ -329,7 +372,7 @@ def _estimate_partition_wait(part):
 
 def get_partition_summary():
     """Compact cross-cluster overview for quick agent decisions."""
-    all_data = get_all_partitions()
+    all_data = get_all_partitions_cached()
     summary = {}
     for cluster_name, parts in all_data.items():
         accessible = [p for p in parts if p.get("user_accessible", True) and p.get("state") == "UP"]

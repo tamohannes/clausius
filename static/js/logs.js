@@ -4,6 +4,14 @@ let _currentRemotePath = null, _currentResolvedPath = null, _currentSource = nul
 const _treeState = {};   // path -> { open, entries }
 const TREE_CACHE_TTL_MS = 30000;
 
+// ── Live tail state ──
+let _liveTimer = null;
+let _liveActive = false;
+let _liveInterval = 2000;
+const LIVE_MIN_MS = 2000;
+const LIVE_MAX_MS = 5000;
+let _liveLastHash = null;
+
 async function openLog(cluster, jobId, jobName, force) {
   _exCluster = cluster;
   _exJobId = jobId;
@@ -21,7 +29,7 @@ async function openLog(cluster, jobId, jobName, force) {
   for (const k of Object.keys(_treeState)) delete _treeState[k];
 
   try {
-    const qs = force ? '?force=1' : '';
+    const qs = force ? '?force=1&include_first=1' : '?include_first=1';
     const res = await fetch(`/api/log_files/${cluster}/${jobId}${qs}`);
     const data = await res.json();
 
@@ -39,11 +47,9 @@ async function openLog(cluster, jobId, jobName, force) {
     const files = (data.files || []).filter(f => f.path);
     const dirs  = data.dirs || [];
 
-    // Build tree sections
     const tree = document.getElementById('tree-pane');
     tree.innerHTML = '';
 
-    // Section 1: Quick-access log files grouped by type
     if (files.length) {
       tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
         name: f.label, path: f.path, is_dir: false,
@@ -51,14 +57,29 @@ async function openLog(cluster, jobId, jobName, force) {
       })), true));
     }
 
-    // Section 2: Explorable dirs (eval-logs, eval-results, etc.)
     for (const dir of dirs) {
       tree.appendChild(makeTreeSection('📁 ' + dir.label, [], false, dir.path));
     }
 
-    // Auto-open first file
     if (files.length) {
-      await viewFile(files[0].path);
+      const first = files[0];
+      if (data.first_content != null) {
+        _currentFilePath = first.path;
+        _currentRemotePath = first.path;
+        _currentResolvedPath = data.first_resolved_path || first.path;
+        _currentSource = data.first_source || 'ssh';
+        document.getElementById('content-path').textContent = first.path;
+        const el = document.getElementById('modal-content');
+        const rendered = renderFileContentByType(first.path, data.first_content);
+        el.className = rendered.cls;
+        el.innerHTML = rendered.html;
+        el.parentElement.scrollTop = el.parentElement.scrollHeight;
+        const sourceEl = document.getElementById('content-source');
+        sourceEl.textContent = `source: ${_currentSource}`;
+        sourceEl.className = `source-pill ${_currentSource}`;
+      } else {
+        await viewFile(first.path);
+      }
     } else if (dirs.length) {
       await expandDir(dirs[0].path, tree.querySelector('.tree-items'));
     } else {
@@ -508,8 +529,118 @@ function _mdInline(text) {
 function _isHtmlEmbed(text) {
   if (!text) return false;
   if (/\.(html?)(\?[^\s]*)?$/i.test(text) && /^(https?:\/\/|\/api\/)/.test(text)) return true;
-  const m = text.match(/^!\[([^\]]*)\]\(([^)]+\.html?)\)$/i);
+  const m = text.match(/^!\[([^\]]*)\]\(([^)]+\.html?)(\?[^\s)]*)?\)$/i);
   return !!m;
+}
+
+function _fitHtmlEmbed(iframe) {
+  let attempts = 0;
+  const maxAttempts = 20;
+  const interval = 250;
+  let retryTimer = null;
+  let fitted = false;
+  let resizeCount = 0;
+  const maxResizes = 3;
+
+  function scheduleFit(delay = interval) {
+    if (fitted) return;
+    clearTimeout(retryTimer);
+    retryTimer = setTimeout(tryFit, delay);
+  }
+
+  function fitPlotly(win, doc) {
+    const plotDiv = doc.querySelector('.js-plotly-plot, .plotly-graph-div');
+    if (!plotDiv || !win.Plotly || !plotDiv._fullLayout) return false;
+
+    const width = Math.max(iframe.clientWidth, 320);
+    const height = Math.max(iframe.clientHeight, 240);
+    const root = doc.documentElement;
+    const wrapper = plotDiv.parentElement && plotDiv.parentElement !== doc.body ? plotDiv.parentElement : null;
+
+    root.style.margin = '0';
+    root.style.width = '100%';
+    root.style.height = '100%';
+    root.style.overflow = 'hidden';
+    doc.body.style.margin = '0';
+    doc.body.style.width = '100%';
+    doc.body.style.height = '100%';
+    doc.body.style.overflow = 'hidden';
+
+    if (wrapper) {
+      wrapper.style.width = '100%';
+      wrapper.style.height = '100%';
+      wrapper.style.margin = '0';
+    }
+
+    plotDiv.style.width = `${width}px`;
+    plotDiv.style.height = `${height}px`;
+    plotDiv.style.maxWidth = '100%';
+    plotDiv.style.maxHeight = '100%';
+
+    if (typeof win.Plotly.relayout === 'function') {
+      win.Plotly.relayout(plotDiv, { autosize: false, width, height })
+        .then(() => {
+          if (win.Plotly.Plots && typeof win.Plotly.Plots.resize === 'function') {
+            win.Plotly.Plots.resize(plotDiv);
+          }
+        })
+        .catch(() => {});
+    } else if (win.Plotly.Plots && typeof win.Plotly.Plots.resize === 'function') {
+      win.Plotly.Plots.resize(plotDiv);
+    }
+    return true;
+  }
+
+  function tryFit() {
+    attempts++;
+    try {
+      const win = iframe.contentWindow;
+      const doc = iframe.contentDocument || win.document;
+      if (!doc || !doc.body) {
+        if (attempts < maxAttempts) scheduleFit();
+        return;
+      }
+
+      if (fitPlotly(win, doc)) {
+        fitted = true;
+        return;
+      }
+
+      if (attempts < maxAttempts) {
+        scheduleFit();
+        return;
+      }
+
+      fitted = true;
+      const cw = doc.documentElement.scrollWidth;
+      const ch = doc.documentElement.scrollHeight;
+      const iw = iframe.clientWidth;
+      const ih = iframe.clientHeight;
+      if (cw < 10 || ch < 10) return;
+      const scale = Math.min(iw / cw, ih / ch, 1);
+      if (scale < 1) {
+        const body = doc.body || doc.documentElement;
+        body.style.transformOrigin = 'top left';
+        body.style.transform = `scale(${scale})`;
+        body.style.width = `${100 / scale}%`;
+        body.style.height = `${100 / scale}%`;
+      }
+    } catch (_) {
+      if (attempts < maxAttempts) scheduleFit();
+    }
+  }
+
+  if (window.ResizeObserver && !iframe._htmlEmbedResizeObserver) {
+    iframe._htmlEmbedResizeObserver = new ResizeObserver(() => {
+      if (++resizeCount > maxResizes) return;
+      fitted = false;
+      attempts = 0;
+      scheduleFit(100);
+    });
+    iframe._htmlEmbedResizeObserver.observe(iframe);
+  }
+
+  scheduleFit(200);
 }
 
 function _renderHtmlEmbed(text) {
@@ -518,7 +649,8 @@ function _renderHtmlEmbed(text) {
   if (m) { caption = m[1]; url = m[2]; }
   const safeSrc = url.replace(/"/g, '&quot;');
   return `<div class="lb-html-embed">
-    <iframe src="${safeSrc}" sandbox="allow-scripts allow-same-origin" loading="lazy"></iframe>
+    <button class="lb-html-embed-zoom" onclick="openHtmlLightbox('${safeSrc}')" title="Open fullscreen">⛶</button>
+    <iframe src="${safeSrc}" sandbox="allow-scripts allow-same-origin" loading="lazy" onload="_fitHtmlEmbed(this)"></iframe>
     ${caption ? `<div class="lb-html-embed-caption">${escapeHtml(caption)}</div>` : ''}
   </div>`;
 }
@@ -651,16 +783,16 @@ function markdownToHtml(raw) {
       continue;
     }
     if (inList) { html += '</ul>'; inList = false; }
-    if (/^\s*!\[.*?\]\(.*?\)\s*$/.test(line)) {
+    if (_isHtmlEmbed(line.trim())) {
+      html += _renderHtmlEmbed(line.trim());
+    }
+    else if (/^\s*!\[.*?\]\(.*?\)\s*$/.test(line)) {
       const m = line.match(/!\[([^\]]*)\]\(([^)]+)\)/);
       if (m) {
         figCounter++;
         lastWasFigure = true;
         html += `<figure class="lb-figure"><img src="${escapeHtml(m[2])}" alt="${escapeHtml(m[1])}" class="lb-inline-img" loading="lazy">`;
       }
-    }
-    else if (_isHtmlEmbed(line.trim())) {
-      html += _renderHtmlEmbed(line.trim());
     }
     else {
       html += `<p>${_mdInline(line)}</p>`;
@@ -705,6 +837,7 @@ function fmtSize(bytes) {
 
 async function viewFile(path, force) {
   force = !!force;
+  stopLive();
   _currentFilePath = path;
   _currentRemotePath = path;
   _currentResolvedPath = path;
@@ -821,6 +954,7 @@ function closeModal(e) {
   if (e.target === document.getElementById('modal-overlay')) closeModalDirect();
 }
 function closeModalDirect() {
+  stopLive();
   document.getElementById('modal-overlay').classList.remove('open');
 }
 document.addEventListener('keydown', e => {
@@ -857,5 +991,85 @@ function setupTreeResizer() {
   window.addEventListener('mouseup', () => {
     _isResizingTree = false;
   });
+}
+
+// ── Live tail ──
+
+function _simpleHash(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+
+function toggleLive() {
+  if (_liveActive) {
+    stopLive();
+  } else {
+    startLive();
+  }
+}
+
+function startLive() {
+  if (_liveActive) return;
+  if (!_currentFilePath) return;
+  // Skip live mode for JSONL files (lazy-loaded, not tail-friendly)
+  if (/\.jsonl(?:-async)?$/i.test(_currentFilePath)) return;
+  _liveActive = true;
+  _liveInterval = LIVE_MIN_MS;
+  _liveLastHash = null;
+  const btn = document.getElementById('live-toggle');
+  if (btn) btn.classList.add('active');
+  _scheduleLiveTick();
+}
+
+function stopLive() {
+  _liveActive = false;
+  _liveLastHash = null;
+  if (_liveTimer) {
+    clearTimeout(_liveTimer);
+    _liveTimer = null;
+  }
+  const btn = document.getElementById('live-toggle');
+  if (btn) btn.classList.remove('active');
+}
+
+function _scheduleLiveTick() {
+  if (!_liveActive) return;
+  _liveTimer = setTimeout(_liveTick, _liveInterval);
+}
+
+async function _liveTick() {
+  if (!_liveActive || !_currentFilePath) { stopLive(); return; }
+  const overlay = document.getElementById('modal-overlay');
+  if (!overlay || !overlay.classList.contains('open')) { stopLive(); return; }
+  if (document.hidden) { _scheduleLiveTick(); return; }
+  try {
+    const res = await fetch(`/api/log/${_exCluster}/${_exJobId}?path=${encodeURIComponent(_currentFilePath)}&lines=300&force=1`);
+    const data = await res.json();
+    if (!_liveActive) return;
+    if (data.status !== 'ok') { _scheduleLiveTick(); return; }
+    const hash = _simpleHash(data.content || '');
+    if (hash !== _liveLastHash) {
+      _liveLastHash = hash;
+      _liveInterval = LIVE_MIN_MS;
+      const el = document.getElementById('modal-content');
+      const rendered = renderFileContentByType(_currentFilePath, data.content);
+      el.className = rendered.cls;
+      el.innerHTML = rendered.html;
+      el.parentElement.scrollTop = el.parentElement.scrollHeight;
+      _currentSource = data.source || 'ssh';
+      _currentResolvedPath = data.resolved_path || _currentFilePath;
+      const sourceEl = document.getElementById('content-source');
+      sourceEl.textContent = `source: ${_currentSource}`;
+      sourceEl.className = `source-pill ${_currentSource}`;
+    } else {
+      _liveInterval = Math.min(_liveInterval + 500, LIVE_MAX_MS);
+    }
+  } catch (_) {
+    _liveInterval = Math.min(_liveInterval + 1000, LIVE_MAX_MS);
+  }
+  _scheduleLiveTick();
 }
 

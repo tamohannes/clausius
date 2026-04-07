@@ -1,13 +1,19 @@
 """Flask route handlers as a Blueprint."""
 
 import json
+import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta
 
-from flask import Blueprint, jsonify, request, render_template, make_response
+from flask import Blueprint, g, jsonify, request, render_template, make_response
+
+_log = logging.getLogger(__name__)
+_SLOW_REQUEST_MS = 2000
 
 from .config import (
     CLUSTERS, DEFAULT_USER, TEAM_NAME, TERMINAL_STATES, RESULT_DIR_NAMES,
@@ -38,7 +44,7 @@ from .logs import (
     read_jsonl_index, read_jsonl_record,
 )
 from .jobs import (
-    refresh_all_clusters, refresh_cluster,
+    refresh_all_clusters, refresh_cluster, _is_cache_fresh,
     schedule_prefetch, prefetch_cluster_bulk, fetch_est_start_bulk,
     fetch_team_usage, fetch_team_jobs,
     get_job_stats_cached, fetch_run_metadata_sync,
@@ -48,6 +54,21 @@ from .jobs import (
 from .db import get_run_with_jobs
 
 api = Blueprint("api", __name__)
+
+
+@api.before_request
+def _start_timer():
+    g._req_start = time.monotonic()
+
+
+@api.after_request
+def _log_slow(response):
+    start = getattr(g, '_req_start', None)
+    if start is not None:
+        ms = (time.monotonic() - start) * 1000
+        if ms > _SLOW_REQUEST_MS:
+            _log.warning("slow request: %s %s — %.0fms", request.method, request.path, ms)
+    return response
 
 
 def _rebuild_cross_deps(jobs):
@@ -122,6 +143,10 @@ def index():
 def api_jobs():
     if request.args.get("refresh", "0") == "1":
         refresh_all_clusters()
+    else:
+        stale = [n for n in CLUSTERS if not _is_cache_fresh(n)]
+        if stale:
+            threading.Thread(target=refresh_all_clusters, daemon=True).start()
 
     with _cache_lock:
         snapshot = {k: dict(v) for k, v in _cache.items()}
@@ -328,7 +353,8 @@ def _cleanup_mounted_logs(cluster_name, job_id, log_path, cleaned_list):
 def api_jobs_cluster(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
-    _last_polled[cluster] = 0.0
+    if request.args.get("force") == "1":
+        _last_polled[cluster] = 0.0
     refresh_cluster(cluster)
     with _cache_lock:
         data = dict(_cache.get(cluster, {"status": "ok", "jobs": [], "updated": None}))
@@ -481,7 +507,12 @@ def api_team_usage():
 
 @api.route("/api/team_jobs")
 def api_team_jobs():
-    """Fetch per-job breakdown for team members across all PPP accounts."""
+    """Fetch per-job breakdown for team members across all PPP accounts.
+
+    Returns cached data immediately for clusters that have it, and kicks off
+    background refreshes for stale clusters. Never blocks on SSH.
+    """
+    from .jobs import _team_jobs_cache, TEAM_JOBS_TTL_SEC
     cluster_filter = request.args.get("cluster", "")
     if cluster_filter:
         cluster_list = [c.strip() for c in cluster_filter.split(",") if c.strip()]
@@ -489,23 +520,26 @@ def api_team_jobs():
         cluster_list = [c for c in CLUSTERS if c != "local"]
 
     results = {}
-    threads = []
-    import threading as _th
-    def _fetch(c):
-        try:
-            r = fetch_team_jobs(c)
-            if r:
-                results[c] = r
-        except Exception:
-            pass
+    stale = []
     for c in cluster_list:
         if c not in CLUSTERS or c == "local":
             continue
-        t = _th.Thread(target=_fetch, args=(c,), daemon=True)
-        threads.append(t)
-        t.start()
-    for t in threads:
-        t.join(timeout=25)
+        cached = _cache_get(_team_jobs_cache, c, TEAM_JOBS_TTL_SEC)
+        if cached is not None:
+            results[c] = cached
+        else:
+            stale.append(c)
+
+    if stale:
+        def _bg():
+            for c in stale:
+                try:
+                    r = fetch_team_jobs(c)
+                    if r:
+                        results[c] = r
+                except Exception:
+                    pass
+        threading.Thread(target=_bg, daemon=True).start()
 
     return jsonify({"status": "ok", "clusters": results})
 
@@ -609,6 +643,198 @@ def api_stats(cluster, job_id):
     return jsonify(result)
 
 
+def _expand_slurm_nodelist(nodelist_str):
+    """Expand compact Slurm node notation into a set of individual hostnames.
+
+    Handles formats like:
+      gpu-b200-001                    → {gpu-b200-001}
+      gpu-b200-[001-004]              → {gpu-b200-001, ..., gpu-b200-004}
+      gpu-b200-[001-003,005,007-009]  → 6 nodes
+      gpu-b200-[001-004],gpu-a100-[001-002]  → 6 nodes
+    """
+    if not nodelist_str or nodelist_str in ("(null)", "None", "N/A", "", "—"):
+        return set()
+
+    nodes = set()
+    # Split on commas that are NOT inside brackets
+    # e.g. "gpu-b200-[001-003],gpu-a100-001" → ["gpu-b200-[001-003]", "gpu-a100-001"]
+    parts = re.split(r',(?![^\[]*\])', nodelist_str)
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r'^(.+)\[([^\]]+)\](.*)$', part)
+        if not m:
+            nodes.add(part)
+            continue
+        prefix, ranges, suffix = m.group(1), m.group(2), m.group(3)
+        for rng in ranges.split(","):
+            if "-" in rng:
+                lo, hi = rng.split("-", 1)
+                width = len(lo)
+                for i in range(int(lo), int(hi) + 1):
+                    nodes.add(f"{prefix}{str(i).zfill(width)}{suffix}")
+            else:
+                nodes.add(f"{prefix}{rng}{suffix}")
+    return nodes
+
+
+def _parse_gres_gpu_count(gres_str):
+    """Extract per-node GPU count from a GRES string.
+
+    Handles: 'gpu:8', 'gpu:a100:4', 'gpu:b200:4(S:0-1)', 'gpu:4(S:0)'
+    """
+    count, _ = _parse_gres_gpu_count_with_presence(gres_str)
+    return count
+
+
+def _parse_gres_gpu_count_with_presence(gres_str):
+    """Return (gpu_count, has_gpu_spec) for a GRES-like string."""
+    if not gres_str or gres_str in ("N/A", "(null)"):
+        return 0, False
+    m = re.search(r'gpu[^:]*:(?:[a-zA-Z]\w*:)?(\d+)', gres_str)
+    if not m:
+        return 0, False
+    try:
+        return int(m.group(1)), True
+    except ValueError:
+        return 0, True
+
+
+def _parse_run_metadata_gpus_per_node(scontrol_raw="", batch_script=""):
+    """Extract GPUs-per-node hints from run metadata fields."""
+    gpn = 0
+
+    if scontrol_raw:
+        for m in re.finditer(r'(?:^|\s)(?:Gres|TresPerNode)=([^\s]+)', scontrol_raw):
+            g, _ = _parse_gres_gpu_count_with_presence(m.group(1))
+            gpn = max(gpn, g)
+
+        for m in re.finditer(r'\bReqTRES=([^\n]+)', scontrol_raw):
+            req_tres = m.group(1)
+            for gm in re.finditer(r'gres/gpu(?:[:/][a-zA-Z]\w*)?=(\d+)', req_tres):
+                try:
+                    gpn = max(gpn, int(gm.group(1)))
+                except ValueError:
+                    continue
+
+    if batch_script:
+        for line in batch_script.splitlines():
+            l = line.strip()
+            if not l.startswith("#SBATCH"):
+                continue
+            m = re.search(r'--gpus-per-node(?:=|\s+)(\d+)', l)
+            if m:
+                gpn = max(gpn, int(m.group(1)))
+            m = re.search(r'--gres(?:=|\s+)gpu(?::[a-zA-Z]\w*)?:(\d+)', l)
+            if m:
+                gpn = max(gpn, int(m.group(1)))
+
+    return gpn
+
+
+def _infer_run_gpus_per_node(cluster, jobs, scontrol_raw="", batch_script=""):
+    """Infer GPUs per node when job GRES is absent.
+
+    Fallback order:
+      1) Run metadata hints (`scontrol_raw` / `batch_script`)
+      2) Partition summary for the run's partitions
+      3) Cluster config (`CLUSTERS[cluster].gpus_per_node`)
+      4) Conservative default (8) for non-local, non-CPU runs
+    """
+    if cluster == "local":
+        return 0
+
+    partitions = {
+        (j.get("partition") or "").strip()
+        for j in jobs
+        if (j.get("partition") or "").strip()
+    }
+    non_cpu_parts = [
+        p for p in partitions
+        if not p.lower().startswith("cpu") and p.lower() not in ("defq", "fake")
+    ]
+
+    # If partitions are known and all CPU, do not force GPU fallback.
+    if partitions and not non_cpu_parts:
+        return 0
+
+    meta_gpn = _parse_run_metadata_gpus_per_node(scontrol_raw, batch_script)
+    if meta_gpn > 0:
+        return meta_gpn
+
+    part_gpn = 0
+    try:
+        from .partitions import _cache as _part_cache, _lock as _part_lock
+        with _part_lock:
+            rec = _part_cache.get(cluster)
+        parts = rec["data"] if rec else []
+        part_map = {
+            (p.get("name") or ""): int(p.get("gpus_per_node") or 0)
+            for p in parts
+        }
+        if non_cpu_parts:
+            part_gpn = max((part_map.get(p, 0) for p in non_cpu_parts), default=0)
+        if part_gpn <= 0:
+            part_gpn = max(part_map.values(), default=0)
+    except Exception:
+        part_gpn = 0
+
+    if part_gpn > 0:
+        return part_gpn
+
+    cfg_gpn = int(CLUSTERS.get(cluster, {}).get("gpus_per_node", 0) or 0)
+    if cfg_gpn > 0:
+        return cfg_gpn
+
+    return 8
+
+
+def _compute_run_resources(jobs, cluster="", run_scontrol_raw="", run_batch_script=""):
+    """Compute unique node count and total GPU count for a run.
+
+    Total GPUs = unique_nodes × gpus_per_node (not summed across array jobs).
+    """
+    all_nodes = set()
+    gpus_per_node = 0
+    per_job_nodes = 0
+    saw_gpu_spec = False
+    saw_explicit_zero_gpu = False
+
+    for j in jobs:
+        nl = j.get("node_list", "")
+        expanded = _expand_slurm_nodelist(nl)
+        all_nodes |= expanded
+
+        g, has_gpu_spec = _parse_gres_gpu_count_with_presence(j.get("gres", ""))
+        if has_gpu_spec:
+            saw_gpu_spec = True
+            if g == 0:
+                saw_explicit_zero_gpu = True
+        if g > gpus_per_node:
+            gpus_per_node = g
+
+        n = int(j.get("nodes") or 0)
+        if n > per_job_nodes:
+            per_job_nodes = n
+
+    if gpus_per_node <= 0:
+        # Do not apply GPU fallback when jobs explicitly report gpu:0.
+        if saw_gpu_spec and saw_explicit_zero_gpu:
+            gpus_per_node = 0
+        else:
+            gpus_per_node = _infer_run_gpus_per_node(
+                cluster,
+                jobs,
+                scontrol_raw=run_scontrol_raw,
+                batch_script=run_batch_script,
+            )
+
+    unique_node_count = len(all_nodes) if all_nodes else per_job_nodes
+    total_gpus = unique_node_count * gpus_per_node
+    return unique_node_count, total_gpus, gpus_per_node
+
+
 @api.route("/api/run_info/<cluster>/<root_job_id>")
 def api_run_info(cluster, root_job_id):
     if cluster not in CLUSTERS:
@@ -621,10 +847,11 @@ def api_run_info(cluster, root_job_id):
         if not run:
             return jsonify({"status": "error", "error": "Run not found"}), 404
     if not run.get("meta_fetched"):
-        fetch_run_metadata_sync(cluster, run["root_job_id"])
-        run = get_run_with_jobs(cluster, run["root_job_id"])
-        if not run:
-            return jsonify({"status": "error", "error": "Run not found after fetch"}), 404
+        threading.Thread(
+            target=fetch_run_metadata_sync,
+            args=(cluster, run["root_job_id"]),
+            daemon=True,
+        ).start()
     for j in run.get("jobs", []):
         if not j.get("project"):
             j["project"] = extract_project(j.get("job_name") or j.get("name") or "")
@@ -632,6 +859,15 @@ def api_run_info(cluster, root_job_id):
         if proj:
             j["project_color"] = get_project_color(proj)
             j["project_emoji"] = get_project_emoji(proj)
+    unique_nodes, total_gpus, gpus_per_node = _compute_run_resources(
+        run.get("jobs", []),
+        cluster=cluster,
+        run_scontrol_raw=run.get("scontrol_raw", ""),
+        run_batch_script=run.get("batch_script", ""),
+    )
+    run["unique_nodes"] = unique_nodes
+    run["total_gpus"] = total_gpus
+    run["gpus_per_node"] = gpus_per_node
     return jsonify({"status": "ok", "run": run})
 
 
@@ -691,6 +927,7 @@ def api_log_files(cluster, job_id):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "files": [], "dirs": [], "error": "Unknown cluster"}), 404
     force = request.args.get("force", "0") == "1"
+    include_first = request.args.get("include_first", "0") == "1"
     result = get_job_log_files_cached(cluster, job_id, force=force)
     files = []
     for f in result.get("files", []):
@@ -704,7 +941,36 @@ def api_log_files(cluster, job_id):
         mounted = resolve_mounted_path(cluster, p, want_dir=True) if (p and cluster != "local") else ""
         source_hint = "local" if cluster == "local" else ("mount" if mounted else "ssh")
         dirs.append({**d, "source_hint": source_hint, "mounted_path": mounted})
-    return jsonify({"status": "ok", "files": files, "dirs": dirs, "error": result.get("error", "")})
+    resp = {"status": "ok", "files": files, "dirs": dirs, "error": result.get("error", "")}
+
+    if include_first and files and not files[0].get("path", "").endswith((".jsonl", ".jsonl-async")):
+        first_path = files[0]["path"]
+        cache_key = (cluster, str(job_id), first_path)
+        cached = _cache_get(_log_content_cache, cache_key, LOG_CONTENT_TTL_SEC)
+        if cached is not None:
+            resp["first_content"] = cached
+            resp["first_source"] = "cache"
+            resp["first_resolved_path"] = first_path
+        else:
+            source = "ssh"
+            resolved = first_path
+            if cluster != "local":
+                mounted = resolve_mounted_path(cluster, first_path, want_dir=False)
+                if mounted:
+                    content = tail_local_file(mounted, 300)
+                    source = "mount"
+                    resolved = mounted
+                else:
+                    content = fetch_log_tail(cluster, first_path, 300)
+            else:
+                content = fetch_log_tail(cluster, first_path, 300)
+                source = "local"
+            _cache_set(_log_content_cache, cache_key, content)
+            resp["first_content"] = content
+            resp["first_source"] = source
+            resp["first_resolved_path"] = resolved
+
+    return jsonify(resp)
 
 
 @api.route("/api/ls/<cluster>")
@@ -1023,13 +1289,16 @@ def api_cluster_utilization():
 
 # ─── Partition & recommendation routes ───────────────────────────────────────
 
-from .partitions import get_partitions as _get_partitions, get_all_partitions, get_partition_summary
+from .partitions import get_partitions as _get_partitions, get_all_partitions, get_all_partitions_cached, get_partition_summary
 
 
 @api.route("/api/partitions")
 def api_partitions_all():
     force = request.args.get("force", "0") == "1"
-    data = get_all_partitions(force=force)
+    if force:
+        data = get_all_partitions(force=True)
+    else:
+        data = get_all_partitions_cached()
     return jsonify({"status": "ok", "clusters": data})
 
 
@@ -1184,6 +1453,7 @@ from .logbooks import (
     search_entries as _lb_search,
     save_image as _lb_save_image,
     get_image_path as _lb_get_image_path,
+    resolve_entry_refs as _lb_resolve_refs,
 )
 
 
@@ -1214,6 +1484,19 @@ def api_logbook_read(project, entry_id):
     if result.get("status") == "error":
         return jsonify(result), 404
     return jsonify(result)
+
+
+@api.route("/api/logbook/resolve_refs")
+def api_logbook_resolve_refs():
+    """Resolve entry IDs to {id, project, title} across all projects."""
+    raw = request.args.get("ids", "")
+    try:
+        ids = [int(x) for x in raw.split(",") if x.strip()]
+    except ValueError:
+        return jsonify([])
+    if not ids:
+        return jsonify([])
+    return jsonify(_lb_resolve_refs(ids))
 
 
 @api.route("/api/logbook/<project>/entries/<int:entry_id>", methods=["PUT"])

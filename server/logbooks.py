@@ -101,6 +101,23 @@ def get_entry(project, entry_id):
     return _row_to_dict(row)
 
 
+def resolve_entry_refs(entry_ids):
+    """Resolve entry IDs to {id, project, title} without project constraint.
+
+    Used for rendering cross-project #N references in entry bodies.
+    """
+    if not entry_ids:
+        return []
+    con = get_db()
+    placeholders = ",".join("?" for _ in entry_ids)
+    rows = con.execute(
+        f"SELECT id, project, title FROM logbook_entries WHERE id IN ({placeholders})",
+        list(entry_ids),
+    ).fetchall()
+    con.close()
+    return [{"id": r["id"], "project": r["project"], "title": r["title"]} for r in rows]
+
+
 def _extract_entry_refs(body):
     """Extract #<id> references from body text."""
     return list(set(int(m) for m in re.findall(r'#(\d+)', body or "")))

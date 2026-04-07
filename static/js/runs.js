@@ -42,6 +42,9 @@ function _renderRunBody(run, cluster) {
   const earliest = _earliestTime(jobs, 'started');
   const latest = _latestTime(jobs, 'ended_at');
   const duration = earliest && latest ? _formatDuration(earliest, latest) : '—';
+  const totalGpus = run.total_gpus;
+  const uniqueNodes = run.unique_nodes;
+  const gpusPerNode = run.gpus_per_node;
 
   let html = '';
 
@@ -61,6 +64,18 @@ function _renderRunBody(run, cluster) {
     <div class="run-timing-item">
       <span class="run-timing-label">Jobs</span>
       <span class="run-timing-value">${jobs.length}</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">GPUs/node</span>
+      <span class="run-timing-value">${gpusPerNode ?? '—'}</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">Nodes</span>
+      <span class="run-timing-value">${uniqueNodes ?? '—'}</span>
+    </div>
+    <div class="run-timing-item">
+      <span class="run-timing-label">Total GPUs (Nodes x GPUs/node)</span>
+      <span class="run-timing-value">${totalGpus ?? '—'}</span>
     </div>
     <div class="run-timing-item">
       <span class="run-timing-label">Project</span>
@@ -100,7 +115,7 @@ function _renderRunBody(run, cluster) {
       </div>
       <div class="run-section-body" id="run-jobs-sec">
         <table class="run-jobs-table">
-          <thead><tr><th>ID</th><th>Name</th><th>State</th><th>Start</th><th>End</th><th>Elapsed</th></tr></thead>
+          <thead><tr><th>ID</th><th>Name</th><th>State</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Nodes</th></tr></thead>
           <tbody>${(() => {
             const _runNames = jobs.map(j => j.job_name || j.name).filter(Boolean);
             const _runHL = computeNameHighlight(_runNames);
@@ -113,6 +128,14 @@ function _renderRunBody(run, cluster) {
               const end = fmtTime(j.ended_local || j.ended_at);
               const rawName = j.job_name || j.name || '';
               const dispName = rawName ? highlightJobName(rawName, _runHL.prefix, _runHL.suffix) : '—';
+              const gm = (j.gres || '').match(/gpu[^:]*:(?:[a-zA-Z]\w*:)?(\d+)/);
+              const part = (j.partition || '').toLowerCase();
+              const isCpuPart = part.startsWith('cpu') || part === 'defq' || part === 'fake';
+              const gpusPerNodeJob = gm ? parseInt(gm[1], 10) : ((!isCpuPart && (gpusPerNode || 0) > 0) ? gpusPerNode : 0);
+              const nodes = parseInt(j.nodes, 10) || 0;
+              const jobGpus = nodes * gpusPerNodeJob;
+              const hasGpuSignal = !!gm || isCpuPart || ((!isCpuPart && (gpusPerNode || 0) > 0));
+              const gpuCell = hasGpuSignal ? jobGpus : '—';
               return `<tr>
                 <td style="color:var(--muted)">${j.job_id || j.jobid || '—'}</td>
                 <td style="font-weight:500" title="${rawName}">${dispName}</td>
@@ -120,6 +143,8 @@ function _renderRunBody(run, cluster) {
                 <td style="color:var(--muted)">${start}</td>
                 <td style="color:var(--muted)">${end}</td>
                 <td style="color:var(--muted)">${j.elapsed || '—'}</td>
+                <td style="color:var(--muted)">${gpuCell}</td>
+                <td style="color:var(--muted)">${nodes > 0 ? nodes : '—'}</td>
               </tr>`;
             }).join('');
           })()}</tbody>

@@ -114,6 +114,44 @@ def fetch_jobs_local():
     return jobs[:20]
 
 
+def _enrich_missing_gres(cluster, jobs):
+    """Stamp synthetic gres on jobs where squeue reports N/A.
+
+    Some clusters (e.g. eos) never populate the GRES field in squeue output.
+    We resolve the per-node GPU count from the partition cache (already in
+    memory, no SSH cost) and write a canonical ``gpu:<N>`` value so every
+    downstream consumer — live board summary, table column, DB, run overlay —
+    gets correct GPU counts without its own fallback logic.
+    """
+    if cluster == "local":
+        return
+
+    gpn = 0
+    try:
+        from .partitions import _cache as _part_cache, _lock as _part_lock
+        with _part_lock:
+            rec = _part_cache.get(cluster)
+        parts = rec["data"] if rec else []
+        gpn = max(
+            (int(p.get("gpus_per_node") or 0) for p in parts
+             if not p.get("name", "").startswith("cpu") and p.get("name") not in ("defq", "fake")),
+            default=0,
+        )
+    except Exception:
+        pass
+    if gpn <= 0:
+        gpn = int(CLUSTERS.get(cluster, {}).get("gpus_per_node", 0) or 0) or 8
+
+    for j in jobs:
+        gres = (j.get("gres") or "").strip()
+        if gres and gres not in ("N/A", "(null)"):
+            continue
+        part = (j.get("partition") or "").lower()
+        if part.startswith("cpu") or part in ("defq", "fake"):
+            continue
+        j["gres"] = f"gpu:{gpn}"
+
+
 def fetch_cluster_data(cluster_name):
     try:
         if cluster_name == "local":
@@ -610,6 +648,7 @@ def refresh_cluster(cluster_name):
 
 def poll_cluster(name):
     data = fetch_cluster_data(name)
+    _enrich_missing_gres(name, data.get("jobs", []))
     current_ids = {j["jobid"] for j in data.get("jobs", [])}
 
     with _cache_lock:

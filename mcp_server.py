@@ -654,15 +654,36 @@ def create_logbook_entry(project: str, title: str, body: str = "", entry_type: s
     """Create a new logbook entry for a project.
 
     The body supports full markdown including tables, code blocks,
-    @run-name references, #entry_id cross-references, and images.
+    @run-name references, #N cross-references, and images.
     created_at and edited_at are set automatically.
 
     Rich content:
     - Images: upload with upload_logbook_image, embed with ![caption](url)
-    - HTML figures: upload .html files with upload_logbook_image, then paste
-      the returned URL on its own line to embed as an interactive iframe
-    - Cross-references: use #<entry_id> to link to another logbook entry
-      (e.g. #42 links to entry 42). These show in the semantic map.
+    - Interactive HTML figures (plotly, bokeh, etc.): upload .html files with
+      upload_logbook_image, then embed using ONE of these two formats:
+
+      Format 1 — bare URL on its own line:
+        /api/logbook/project/images/plot.html
+
+      Format 2 — markdown image syntax (supports caption):
+        ![Descriptive caption](/api/logbook/project/images/plot.html)
+
+      IMPORTANT: Do NOT use raw <iframe> tags — they will be escaped and
+      rendered as literal text. Only the two formats above are supported.
+
+    - Figure captions: place a blockquote starting with **Figure N.** on the
+      line immediately after an image/HTML embed for a styled caption.
+
+    Cross-entry references (strict format):
+    - #N — links to entry N. Works across projects. Write bare #42, not
+      [#42] or entry #42. Must be preceded by whitespace or start of line.
+    - #N:fig-M — deep-link to Figure M in entry N.
+    - #N:tbl-M — deep-link to Table M in entry N.
+    - Same-project refs render as cyan chips; cross-project refs render as
+      violet chips with a project badge. All refs auto-resolve to show the
+      entry title. These also populate the semantic map.
+    - Do NOT place #N inside code blocks or inline code — it won't render.
+
     - Code blocks, blockquotes, tables, links all supported
 
     entry_type: "note" (default) for experiment results, debugging sessions,
@@ -868,17 +889,36 @@ def upload_logbook_image(project: str, image_path: str) -> dict:
     Use this to attach plots, figures, screenshots, diagrams, or interactive
     HTML visualizations (plotly, matplotlib, bokeh exports) to logbook entries.
 
-    For images: insert the returned URL using ![description](url)
-    For HTML files: paste the returned URL on its own line in the entry body
-    to embed it as an interactive iframe.
-
     Supported formats: .png, .jpg, .jpeg, .gif, .webp, .svg, .html, .htm
+
+    After uploading, embed in the entry body using ONE of these formats:
+
+    For images (.png, .jpg, etc.):
+      ![description](returned_url)
+
+    For interactive HTML files (.html):
+      Option A — bare URL on its own line (no caption):
+        /api/logbook/project/images/plot.html
+
+      Option B — markdown image syntax (with caption):
+        ![Caption text](/api/logbook/project/images/plot.html)
+
+    IMPORTANT: Do NOT use raw <iframe> or other HTML tags. The logbook
+    renderer only supports the two formats above for HTML embeds.
+
+    Requirements for interactive HTML figures (Plotly, Bokeh, etc.):
+    - NEVER set fixed width/height in the layout. Use autosize instead:
+        fig.update_layout(autosize=True)  # NOT width=1400, height=700
+    - For Plotly, write with responsive config:
+        fig.write_html("plot.html", config={"responsive": True})
+    - The logbook embeds these in iframes that vary in size (320px inline,
+      90vh fullscreen). Fixed dimensions prevent proper scaling.
 
     Args:
         project:    Project name.
         image_path: Absolute path to the file on disk.
 
-    Returns: {status, url, filename} — use the url in markdown image syntax.
+    Returns: {status, url, filename} — use the url in the formats above.
     """
     import os
     if not os.path.isfile(image_path):

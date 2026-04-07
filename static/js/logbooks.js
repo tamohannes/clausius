@@ -242,19 +242,37 @@ function _showMainEmpty() {
 }
 
 function _pushLbHistory(state) {
-  if (_lbHistory[_lbHistory.length - 1] !== state) _lbHistory.push(state);
+  const top = _lbHistory[_lbHistory.length - 1];
+  if (top && top.type === state.type
+      && top.entryId === state.entryId
+      && top.project === state.project
+      && top.anchor === state.anchor) return;
+  _lbHistory.push(state);
 }
 
 function _lbGoBack() {
-  if (!_lbHistory.length) {
+  if (_lbHistory.length <= 1) {
+    _lbHistory = [];
+    _mapActive = false;
+    _stopMapGraphSimulation();
+    _syncMapBtnActive(false);
     _showMainEmpty();
     return;
   }
 
-  // Drop current state and reveal the previous one.
   _lbHistory.pop();
   const prev = _lbHistory[_lbHistory.length - 1];
-  if (prev === 'map') {
+
+  if (prev.project && prev.project !== _lbProject) {
+    _lbProject = prev.project;
+    const sel = document.getElementById('lb-project-select');
+    if (sel) sel.value = prev.project;
+    _invalidateMapCache();
+    _loadEntries(prev.project);
+    _loadRunNames(prev.project);
+  }
+
+  if (prev.type === 'map') {
     _mapActive = true;
     _syncMapBtnActive(true);
     _loadMapData(_lbProject);
@@ -264,8 +282,8 @@ function _lbGoBack() {
   _mapActive = false;
   _stopMapGraphSimulation();
   _syncMapBtnActive(false);
-  if (prev) {
-    openLogbookEntry(prev, { pushHistory: false });
+  if (prev.entryId) {
+    openLogbookEntry(prev.entryId, { pushHistory: false, anchor: prev.anchor });
   } else {
     _showMainEmpty();
   }
@@ -275,7 +293,7 @@ async function openLogbookEntry(entryId, opts = {}) {
   if (!_lbProject) return;
   const el = document.getElementById('lb-main');
   if (!el) return;
-  if (opts.pushHistory !== false) _pushLbHistory(entryId);
+  if (opts.pushHistory !== false) _pushLbHistory({ type: 'entry', entryId, project: _lbProject, anchor: opts.anchor || null });
   _highlightSidebarItem(entryId);
   if (typeof _updateActiveTabExtra === 'function') {
     _updateActiveTabExtra({ lbProject: _lbProject, lbEntryId: entryId });
@@ -311,6 +329,7 @@ async function openLogbookEntry(entryId, opts = {}) {
         <div class="lb-detail-body">${bodyHtml}</div>
       </div>`;
     _resolveEntryRefs();
+    const scrollContainer = document.getElementById('lb-main');
     if (opts.anchor) {
       requestAnimationFrame(() => {
         const target = document.getElementById(opts.anchor);
@@ -318,12 +337,67 @@ async function openLogbookEntry(entryId, opts = {}) {
           target.scrollIntoView({ behavior: 'smooth', block: 'center' });
           target.classList.add('lb-anchor-highlight');
           setTimeout(() => target.classList.remove('lb-anchor-highlight'), 2500);
+        } else if (scrollContainer) {
+          scrollContainer.scrollTop = 0;
         }
       });
+    } else if (scrollContainer) {
+      scrollContainer.scrollTop = 0;
     }
   } catch (e) {
     toast('Failed to load entry', 'error');
   }
+}
+
+
+// ── Image & HTML lightbox ────────────────────────────────────────────────────
+
+function _dismissLightbox(overlay) {
+  overlay.classList.remove('visible');
+  const iframe = overlay.querySelector('iframe');
+  if (iframe && iframe._htmlEmbedResizeObserver) {
+    iframe._htmlEmbedResizeObserver.disconnect();
+    iframe._htmlEmbedResizeObserver = null;
+  }
+  setTimeout(() => overlay.remove(), 200);
+}
+
+document.addEventListener('click', e => {
+  if (e.target.closest('.lb-html-embed-zoom')) return;
+  const img = e.target.closest('.lb-detail-body img, .logbook-entry-content img');
+  if (!img) return;
+  e.stopPropagation();
+  const overlay = document.createElement('div');
+  overlay.className = 'lb-lightbox';
+  const big = document.createElement('img');
+  big.src = img.src;
+  overlay.appendChild(big);
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('visible'));
+  overlay.addEventListener('click', () => _dismissLightbox(overlay));
+  document.addEventListener('keydown', function esc(ev) {
+    if (ev.key === 'Escape') { _dismissLightbox(overlay); document.removeEventListener('keydown', esc); }
+  });
+});
+
+function openHtmlLightbox(src) {
+  const overlay = document.createElement('div');
+  overlay.className = 'lb-lightbox lb-lightbox-html';
+  const close = document.createElement('button');
+  close.className = 'lb-lightbox-close';
+  close.textContent = '✕';
+  close.onclick = () => _dismissLightbox(overlay);
+  const iframe = document.createElement('iframe');
+  iframe.src = src;
+  iframe.sandbox = 'allow-scripts allow-same-origin';
+  iframe.onload = () => _fitHtmlEmbed(iframe);
+  overlay.appendChild(close);
+  overlay.appendChild(iframe);
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('visible'));
+  document.addEventListener('keydown', function esc(ev) {
+    if (ev.key === 'Escape') { _dismissLightbox(overlay); document.removeEventListener('keydown', esc); }
+  });
 }
 
 
@@ -379,7 +453,9 @@ async function exportEntryHtml() {
   const imgRegex = /src="(\/api\/logbook\/[^"]+)"/g;
   const urls = new Set();
   let m;
-  while ((m = imgRegex.exec(bodyHtml)) !== null) urls.add(m[1]);
+  while ((m = imgRegex.exec(bodyHtml)) !== null) {
+    if (!/\.html?$/i.test(m[1])) urls.add(m[1]);
+  }
 
   const dataUris = {};
   for (const url of urls) {
@@ -397,6 +473,16 @@ async function exportEntryHtml() {
   for (const [url, dataUri] of Object.entries(dataUris)) {
     bodyHtml = bodyHtml.split(url).join(dataUri);
   }
+
+  bodyHtml = bodyHtml.replace(/\s*onload="[^"]*"/g, '');
+  bodyHtml = bodyHtml.replace(/\s*sandbox="[^"]*"/g, '');
+  bodyHtml = bodyHtml.replace(/<button class="lb-html-embed-zoom"[^>]*>[^<]*<\/button>/g, '');
+
+  const origin = window.location.origin;
+  bodyHtml = bodyHtml.replace(
+    /<iframe\s+src="(\/api\/logbook\/[^"]+\.html?)"([^>]*)><\/iframe>/gi,
+    `<iframe src="${origin}$1" onerror="this.classList.add('embed-failed')"$2></iframe><div class="embed-offline">Interactive figure — open in clausius to view</div>`
+  );
 
   bodyHtml = bodyHtml.replace(/<table\b/g, '<div class="table-wrap"><table')
                      .replace(/<\/table>/g, '</table></div>');
@@ -458,6 +544,23 @@ code {
   background: var(--code-bg); padding: 2px 5px; border-radius: 4px;
 }
 pre code { background: none; padding: 0; }
+.lb-html-embed {
+  margin: 16px 0; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--border); background: #fff;
+}
+.lb-html-embed iframe {
+  width: 100%; height: 600px; border: none; display: block;
+}
+.lb-html-embed-caption {
+  font-size: 12px; color: var(--muted); padding: 6px 12px;
+  border-top: 1px solid var(--border); text-align: center;
+}
+.embed-offline {
+  display: none; padding: 32px 16px; text-align: center;
+  color: var(--muted); font-size: 13px; font-style: italic;
+}
+iframe.embed-failed + .embed-offline { display: block; }
+iframe.embed-failed { display: none; }
 .table-wrap {
   overflow-x: auto; margin: 16px 0; border-radius: 8px;
   border: 1px solid var(--border);
@@ -512,6 +615,12 @@ figcaption strong { color: var(--text); font-weight: 600; }
   updateIcon();
   setTimeout(function(){ var h = document.getElementById('save-hint'); if(h) h.style.opacity='0'; }, 4000);
   setTimeout(function(){ var h = document.getElementById('save-hint'); if(h) h.remove(); }, 4500);
+  setTimeout(function(){
+    document.querySelectorAll('iframe[src*="/api/logbook/"]').forEach(function(f){
+      try { if(!f.contentDocument || !f.contentDocument.body || !f.contentDocument.body.innerHTML) f.classList.add('embed-failed'); }
+      catch(e){ f.classList.add('embed-failed'); }
+    });
+  }, 3000);
 })();
 function toggleTheme() {
   var t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
@@ -522,14 +631,15 @@ function updateIcon() {
   var btn = document.getElementById('theme-btn');
   if (btn) btn.textContent = document.documentElement.getAttribute('data-theme') === 'dark' ? '☀️' : '🌙';
 }
+
 </script>
 </body>
 </html>`;
 
-  const win = window.open('', '_blank');
+  const pageBlob = new Blob([html], { type: 'text/html' });
+  const pageUrl = URL.createObjectURL(pageBlob);
+  const win = window.open(pageUrl, '_blank');
   if (win) {
-    win.document.write(html);
-    win.document.close();
     toast('Opened HTML export in new tab');
   } else {
     toast('Popup blocked — allow popups for this site', 'error');
@@ -751,7 +861,7 @@ function _renderLogbookMarkdown(raw) {
     return placeholder;
   });
   html = html.replace(/(?<!\w)#(\d+)/g, (match, id) =>
-    `<span class="entry-ref" data-entry-ref="${id}" onclick="openLogbookEntry(${id})" title="Open entry #${id}">${match}</span>`
+    `<span class="entry-ref" data-entry-ref="${id}" onclick="_openEntryRef(${id},_lbProject)" title="Open entry #${id}">${match}</span>`
   );
   anchorRefs.forEach((span, i) => {
     html = html.replace(`\x00ANCHOR${i}\x00`, span);
@@ -761,22 +871,48 @@ function _renderLogbookMarkdown(raw) {
 
 function _resolveEntryRefs() {
   const refs = document.querySelectorAll('.entry-ref[data-entry-ref]');
-  if (!refs.length || !_lbProject) return;
+  if (!refs.length) return;
   const ids = new Set();
   refs.forEach(el => ids.add(el.dataset.entryRef));
-  ids.forEach(id => {
-    fetch(`/api/logbook/${encodeURIComponent(_lbProject)}/entries/${id}`)
-      .then(r => r.json())
-      .then(entry => {
-        if (entry.title) {
-          document.querySelectorAll(`.entry-ref[data-entry-ref="${id}"]`).forEach(el => {
-            el.textContent = `#${id} ${entry.title}`;
-            el.title = entry.title;
-          });
-        }
-      })
-      .catch(() => {});
-  });
+  fetch(`/api/logbook/resolve_refs?ids=${Array.from(ids).join(',')}`)
+    .then(r => r.json())
+    .then(entries => {
+      for (const entry of entries) {
+        document.querySelectorAll(`.entry-ref[data-entry-ref="${entry.id}"]`).forEach(el => {
+          const escaped = (entry.title || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          const crossProject = entry.project && entry.project !== _lbProject;
+          const projectBadge = crossProject
+            ? `<span class="entry-ref-project">${entry.project}</span>`
+            : '';
+          el.innerHTML = `<span class="entry-ref-id">#${entry.id}</span>${projectBadge}<span class="entry-ref-title">${escaped}</span>`;
+          el.title = entry.title;
+          el.dataset.entryProject = entry.project || '';
+          el.classList.add('resolved');
+          if (crossProject) el.classList.add('cross-project');
+          el.setAttribute('onclick', `_openEntryRef(${entry.id},'${(entry.project || '').replace(/'/g, "\\'")}')`);
+        });
+      }
+    })
+    .catch(() => {});
+}
+
+async function _openEntryRef(entryId, project, anchor) {
+  if (!project) {
+    try {
+      const res = await fetch(`/api/logbook/resolve_refs?ids=${entryId}`);
+      const entries = await res.json();
+      if (entries.length) project = entries[0].project;
+    } catch (_) {}
+  }
+  if (project && project !== _lbProject) {
+    _lbProject = project;
+    const sel = document.getElementById('lb-project-select');
+    if (sel) sel.value = project;
+    _invalidateMapCache();
+    _loadEntries(project);
+    _loadRunNames(project);
+  }
+  openLogbookEntry(entryId, anchor ? { anchor } : {});
 }
 
 async function openLogByName(runName) {
@@ -1033,7 +1169,7 @@ function openEntryGraph(entryId) {
   try { localStorage.setItem(LB_MAP_VIEW_KEY, _mapView); } catch (_) {}
   _mapActive = true;
   _syncMapBtnActive(true);
-  _pushLbHistory('map');
+  _pushLbHistory({ type: 'map', project: _lbProject });
   _loadMapData(_lbProject);
 }
 
@@ -1044,11 +1180,12 @@ function toggleLogbookMap() {
     _mapFocusEntryId = null;
     _mapNeighborHops = 1;
     _mapEdgeDir = 'both';
-    _pushLbHistory('map');
+    _pushLbHistory({ type: 'map', project: _lbProject });
     _loadMapData(_lbProject);
   } else {
     _stopMapGraphSimulation();
-    if (_lbHistory[_lbHistory.length - 1] === 'map') _lbHistory.pop();
+    const top = _lbHistory[_lbHistory.length - 1];
+    if (top && top.type === 'map') _lbHistory.pop();
     _showMainEmpty();
     filterLogbookType(document.querySelector('.lb-type-btn[data-type=""]'));
   }

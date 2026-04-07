@@ -8,7 +8,7 @@ import threading
 import time
 
 from .config import (
-    CLUSTERS, MOUNT_MAP, MOUNT_REMOTE_MAP, MOUNT_SCRIPT_PATH,
+    CLUSTERS, MOUNT_MAP, MOUNT_REMOTE_MAP, MOUNT_ALIASES, MOUNT_SCRIPT_PATH,
     _cache_set, _dir_list_cache,
 )
 
@@ -80,6 +80,21 @@ def _local_candidates_for_remote_path(cluster_name, remote_path):
                 if root not in seen:
                     seen.add(root)
                     out.append(root)
+
+    # Check mount_aliases (symlink paths that resolve to the same mount)
+    if not out:
+        for alias, idx in MOUNT_ALIASES.get(cluster_name, []):
+            alias = alias.rstrip("/")
+            if idx < len(roots) and rp.startswith(alias + "/"):
+                rel = rp[len(alias):].lstrip("/")
+                cand = os.path.normpath(os.path.join(roots[idx], rel))
+                if cand not in seen:
+                    seen.add(cand)
+                    out.append(cand)
+            elif idx < len(roots) and rp == alias:
+                if roots[idx] not in seen:
+                    seen.add(roots[idx])
+                    out.append(roots[idx])
 
     # Fallback: old-style whole-mount (no MOUNT_REMOTE_MAP entry)
     if not out:

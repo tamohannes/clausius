@@ -61,6 +61,7 @@ const SHORTCUT_DEFAULTS = {
   prevTab:       { label: 'Previous tab',      key: '[',   meta: true,  ctrl: false, shift: false },
   refreshLive:   { label: 'Refresh live data', key: 'r',   meta: true,  ctrl: false, shift: true  },
   exportEntry:   { label: 'Export entry',      key: 's',   meta: true,  ctrl: false, shift: true  },
+  goBack:        { label: 'Go back',           key: 'ArrowLeft', meta: false, ctrl: false, shift: false, alt: true },
 };
 
 let _shortcuts = {};
@@ -98,10 +99,12 @@ function matchesShortcut(e, id) {
   const needMeta = !!s.meta;
   const needCtrl = !!s.ctrl;
   const needShift = !!s.shift;
+  const needAlt = !!s.alt;
   if (needMeta && !(e.metaKey || e.ctrlKey)) return false;
   if (!needMeta && (e.metaKey || e.ctrlKey) && !needCtrl) return false;
   if (needCtrl && !e.ctrlKey) return false;
   if (needShift !== e.shiftKey) return false;
+  if (needAlt !== e.altKey) return false;
   return true;
 }
 
@@ -109,9 +112,14 @@ function _formatShortcutKeys(s) {
   const parts = [];
   if (s.meta) parts.push(navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl');
   if (s.ctrl && !s.meta) parts.push('Ctrl');
+  if (s.alt) parts.push(navigator.platform.includes('Mac') ? '\u2325' : 'Alt');
   if (s.shift) parts.push('\u21E7');
   let k = s.key;
   if (k === 'Tab') k = '\u21E5';
+  else if (k === 'ArrowLeft') k = '\u2190';
+  else if (k === 'ArrowRight') k = '\u2192';
+  else if (k === 'ArrowUp') k = '\u2191';
+  else if (k === 'ArrowDown') k = '\u2193';
   else if (k.length === 1) k = k.toUpperCase();
   parts.push(k);
   return parts;
@@ -157,6 +165,7 @@ function startRecordingShortcut(id) {
       meta: e.metaKey,
       ctrl: e.ctrlKey,
       shift: e.shiftKey,
+      alt: e.altKey,
     };
     saveShortcuts();
     _recordingShortcutId = null;
@@ -459,7 +468,7 @@ async function cancelJob(cluster, jobId) {
   try {
     const res = await fetch(`/api/cancel/${cluster}/${jobId}`, { method: 'POST' });
     const d = await res.json();
-    if (d.status === 'ok') { t.done(`Cancelled ${jobId}`); refreshCluster(cluster); }
+    if (d.status === 'ok') { t.done(`Cancelled ${jobId}`); refreshCluster(cluster, true); }
     else t.done(d.error, 'error');
   } catch { t.done('Cancel failed', 'error'); }
 }
@@ -475,8 +484,8 @@ async function cancelGroup(cluster, jobIdsJson, groupName) {
       body: JSON.stringify({ job_ids: jobIds }),
     });
     const d = await res.json();
-    if (d.status === 'ok') { t.done(`Cancelled ${d.cancelled} jobs in ${groupName}`); refreshCluster(cluster); }
-    else if (d.status === 'partial') { t.done(`Cancelled ${d.cancelled} jobs, ${d.errors.length} failed`, 'error'); refreshCluster(cluster); }
+    if (d.status === 'ok') { t.done(`Cancelled ${d.cancelled} jobs in ${groupName}`); refreshCluster(cluster, true); }
+    else if (d.status === 'partial') { t.done(`Cancelled ${d.cancelled} jobs, ${d.errors.length} failed`, 'error'); refreshCluster(cluster, true); }
     else t.done(d.error, 'error');
   } catch { t.done('Cancel group failed', 'error'); }
 }
@@ -500,7 +509,7 @@ async function mountCluster(cluster) {
     const d = await res.json();
     if (d.status === 'ok') {
       t.done(`Mounted ${cluster}`);
-      refreshCluster(cluster);
+      refreshCluster(cluster, true);
     } else {
       t.done(d.error || `Mount failed: ${cluster}`, 'error');
     }
@@ -517,7 +526,7 @@ async function unmountCluster(cluster) {
     const d = await res.json();
     if (d.status === 'ok') {
       t.done(`Unmounted ${cluster}`);
-      refreshCluster(cluster);
+      refreshCluster(cluster, true);
     } else {
       t.done(d.error || `Unmount failed: ${cluster}`, 'error');
     }
@@ -535,7 +544,7 @@ async function remountCluster(cluster) {
     const d = await res.json();
     if (d.status === 'ok') {
       t.done(`Remounted ${cluster}`);
-      refreshCluster(cluster);
+      refreshCluster(cluster, true);
     } else {
       t.done(d.error || `Remount failed: ${cluster}`, 'error');
     }
@@ -646,10 +655,16 @@ function stopCountdown() {
   clearInterval(cdTimer);
 }
 
+function _isModalOpen() {
+  const overlay = document.getElementById('modal-overlay');
+  return overlay && overlay.classList.contains('open');
+}
+
 function startCountdown() {
   document.getElementById('cd').textContent = countdown;
   cdTimer = setInterval(() => {
     if (document.hidden) return;
+    if (_isModalOpen()) return;
     countdown--;
     document.getElementById('cd').textContent = countdown;
     if (countdown <= 0) { countdown = refreshIntervalSec; fetchAll(); }
