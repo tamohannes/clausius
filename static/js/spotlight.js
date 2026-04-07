@@ -55,6 +55,14 @@ async function _fetchSpotlight(q) {
     const data = await res.json();
     const groups = [];
     let idx = 0;
+    const ql = q.toLowerCase();
+
+    const matchedActions = _quickActions.filter(a =>
+      a.title.toLowerCase().includes(ql) || a.sub.toLowerCase().includes(ql)
+    );
+    if (matchedActions.length) {
+      groups.push({ label: 'Quick Actions', items: matchedActions.map(a => ({ ...a, hint: 'action', idx: idx++ })) });
+    }
 
     if (data.projects && data.projects.length) {
       const items = data.projects.map(p => ({
@@ -107,15 +115,6 @@ async function _fetchSpotlight(q) {
       groups.push({ label: 'Runs', items });
     }
 
-    const ql = q.toLowerCase();
-    const actionMatches = _quickActions.filter(a =>
-      a.title.toLowerCase().includes(ql) || a.sub.toLowerCase().includes(ql)
-    );
-    if (actionMatches.length) {
-      const items = actionMatches.map(a => ({ ...a, hint: 'action', idx: idx++ }));
-      groups.push({ label: 'Actions', items });
-    }
-
     _spotlightItems = groups.flatMap(g => g.items);
     _spotlightIdx = _spotlightItems.length ? 0 : -1;
     _renderSpotlightResults(groups);
@@ -158,7 +157,9 @@ function _spotlightHover(idx) {
 
 function _spotlightSelect(idx) {
   const item = _spotlightItems.find(i => i.idx === idx);
-  if (item && item.action) item.action();
+  if (!item) return;
+  closeSpotlight();
+  if (item.action) item.action();
 }
 
 function onSpotlightKey(e) {

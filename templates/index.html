@@ -100,7 +100,7 @@
           <table id="hist-table">
             <thead><tr>
               <th>Cluster</th><th>ID</th><th>Name</th>
-              <th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th>
+              <th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th>Account</th>
             </tr></thead>
             <tbody id="hist-body"></tbody>
           </table>
@@ -249,29 +249,6 @@
             </div>
           </div>
 
-          <!-- Section 2: GPU Usage History -->
-          <div class="clusters-section" style="margin-top:24px">
-            <div class="clusters-section-head">
-              <div>
-                <div class="clusters-section-title">GPU Usage History</div>
-                <div class="clusters-section-sub">Allocation vs consumption over time</div>
-              </div>
-              <div class="history-controls">
-                <select id="history-cluster" onchange="refreshUsageHistory()">
-                  <option value="">All clusters</option>
-                  {% for name in clusters %}{% if name != 'local' %}<option value="{{ name }}">{{ name }}</option>{% endif %}{% endfor %}
-                </select>
-                <div class="history-range-btns">
-                  <button class="btn btn-sm" onclick="setHistoryDays(7)" data-days="7">7d</button>
-                  <button class="btn btn-sm active" onclick="setHistoryDays(14)" data-days="14">14d</button>
-                  <button class="btn btn-sm" onclick="setHistoryDays(30)" data-days="30">30d</button>
-                </div>
-              </div>
-            </div>
-            <div id="history-chart-wrap" class="history-chart-wrap">
-              <canvas id="history-chart"></canvas>
-            </div>
-          </div>
 
         </div>
       </main>

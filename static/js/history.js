@@ -84,7 +84,7 @@ function _renderHistPage() {
   if (histPage < 0) histPage = 0;
 
   if (!totalGroups) {
-    tbody.innerHTML = `<tr><td colspan="10" style="padding:20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted)">no history yet</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="11" style="padding:20px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted)">no history yet</td></tr>`;
     document.getElementById('hist-pagination').innerHTML = '';
     return;
   }
@@ -115,7 +115,7 @@ function _renderHistPage() {
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs);
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${groupJobs.length} runs</span></span>`;
-      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="10" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
     }
 
     const idSet = new Set(groupJobs.map(j => j.jobid));
@@ -158,6 +158,7 @@ function _renderHistPage() {
         <td class="dim">${j.elapsed || '—'}</td>
         <td class="dim">${gpuStr}</td>
         <td class="dim">${j.partition || '—'}</td>
+        <td class="dim acct-cell">${_shortAcct(j.account || '') || '—'}</td>
       </tr>`;
     });
   });

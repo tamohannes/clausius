@@ -136,14 +136,18 @@ function _persistTabs() {
 }
 
 function _restoreTabs() {
+  const validTypes = new Set(['live', 'history', 'logbook', 'project', 'clusters']);
   try {
     const raw = localStorage.getItem('clausius.appTabs');
     if (raw) {
       const tabs = JSON.parse(raw);
       if (Array.isArray(tabs) && tabs.length) {
-        _appTabs = tabs;
+        const clean = tabs.filter(t => t && t.id && validTypes.has(t.type));
+        if (!clean.length) return false;
+        _appTabs = clean;
         _activeTabId = parseInt(localStorage.getItem('clausius.activeTabId') || '1', 10);
         _nextTabId = parseInt(localStorage.getItem('clausius.nextTabId') || '2', 10);
+        if (!_appTabs.find(t => t.id === _activeTabId)) _activeTabId = _appTabs[0].id;
         const at = _appTabs.find(t => t.id === _activeTabId) || _appTabs[0];
         _activeTabId = at.id;
         switchAppTab(at.id);
@@ -197,7 +201,7 @@ document.addEventListener('keydown', e => {
   if (matchesShortcut(e, 'refreshLive') && currentTab === 'live') {
     e.preventDefault();
     toast('Refreshing live data…');
-    fetchAll();
+    _forceRefreshAll();
     return;
   }
   if (matchesShortcut(e, 'toggleSidebar')) { e.preventDefault(); toggleSidebar(); return; }
@@ -489,6 +493,7 @@ function renderCard(name, data) {
         <td class="dim">${elapsedCell}</td>
         <td>${resourceCell}</td>
         <td class="dim">${j.partition || '—'}</td>
+        <td class="dim acct-cell">${_shortAcct(j.account) || '—'}</td>
         <td>${tailAction}</td>
       </tr>`;
       }).join('');
@@ -497,12 +502,12 @@ function renderCard(name, data) {
       const cancelGroupBtn = cancelableIds.length > 1 && name !== 'local'
         ? `<button class="action-btn cancel-group-btn" onclick="event.stopPropagation();cancelGroup('${name}','${idsAttr}','${gk.replace(/'/g, "\\'")}')">cancel group</button>`
         : '';
-      return `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="10"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
+      return `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="11"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
     }).join('');
 
     body = `<div class="card-body">
       <table>
-        <thead><tr><th>ID</th><th>Name</th><th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th></th></tr></thead>
+        <thead><tr><th>ID</th><th>Name</th><th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th>Account</th><th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
@@ -807,16 +812,38 @@ async function _refreshAllClusters() {
   return _refreshClusters(Object.keys(CLUSTERS));
 }
 
+async function _forceRefreshAll() {
+  const grid = document.getElementById('grid');
+  grid.classList.add('grid-loading');
+  const promises = Object.keys(CLUSTERS).map(name =>
+    fetch(`/api/jobs/${name}?force=1`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.status === 'ok') allData[name] = data;
+        _fillMissing();
+        _renderAll();
+      })
+      .catch(() => {})
+  );
+  await Promise.allSettled(promises);
+  grid.classList.remove('grid-loading');
+  _saveProgressCache();
+  prefetchAndUpdateProgress(allData);
+}
+
 async function _refreshClusters(names) {
   const promises = names.map(name =>
     fetch(`/api/jobs/${name}`)
       .then(r => r.json())
       .then(data => {
-        const prev = allData[name];
-        const prevOk = prev && prev.status === 'ok' && prev.jobs && prev.jobs.length;
-        if (data.status === 'ok' || !prevOk) {
-          allData[name] = data;
+        if (data.status !== 'ok') {
+          const prev = allData[name];
+          if (prev && prev.status === 'ok' && prev.jobs && prev.jobs.length) return;
         }
+        if (!data.updated) return;
+        const prev = allData[name];
+        if (prev && prev.updated && data.updated < prev.updated) return;
+        allData[name] = data;
         _fillMissing();
         _renderAll();
       })

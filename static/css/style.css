@@ -518,6 +518,7 @@ td {
   overflow: hidden; text-overflow: ellipsis;
 }
 td.dim { color: var(--muted); }
+td.acct-cell { font-size: 10px; }
 td.bold { font-weight: 500; }
 .name-cpu { color: var(--muted); font-weight: 400; }
 

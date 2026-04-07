@@ -336,7 +336,7 @@ function _renderProjPage() {
     const totalJobs = groups.reduce((s, g) => s + g.jobs.length, 0);
 
     html += `<div class="proj-hist-card"><div class="proj-hist-card-head">${cluster} ${gpuBadge} <span class="group-count">${groups.length} runs · ${totalJobs} jobs</span></div>`;
-    html += `<table class="proj-compact-table"><thead><tr><th>ID</th><th>Name</th><th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th></tr></thead><tbody>`;
+    html += `<table class="proj-compact-table"><thead><tr><th>ID</th><th>Name</th><th>State</th><th>Logs/Stats</th><th>Start</th><th>End</th><th>Elapsed</th><th>GPUs</th><th>Partition</th><th>Account</th></tr></thead><tbody>`;
 
     const _clusterGkHL = computeNameHighlight(groups.map(g => g.label));
 
@@ -358,7 +358,7 @@ function _renderProjPage() {
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs);
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}</span></span>`;
-      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="9"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
 
       const idSet = new Set(groupJobs.map(j => j.jobid));
       const byId = {};
@@ -394,6 +394,7 @@ function _renderProjPage() {
           <td class="dim">${j.elapsed || '—'}</td>
           <td class="dim">${gpuStr}</td>
           <td class="dim">${j.partition || '—'}</td>
+          <td class="dim acct-cell">${_shortAcct(j.account || '') || '—'}</td>
         </tr>`;
       }
     });

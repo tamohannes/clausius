@@ -121,7 +121,8 @@ def init_db():
                          ("dependency", "TEXT DEFAULT ''"),
                          ("project", "TEXT DEFAULT ''"),
                          ("run_id", "INTEGER DEFAULT NULL"),
-                         ("node_list", "TEXT DEFAULT ''")]:
+                         ("node_list", "TEXT DEFAULT ''"),
+                         ("account", "TEXT DEFAULT ''")]:
         try:
             con.execute(f"ALTER TABLE job_history ADD COLUMN {col} {default}")
         except Exception:
@@ -291,12 +292,16 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
     if node_list_raw in ("(null)", "None", None):
         node_list_raw = ""
 
+    account_raw = job.get("account", "")
+    if account_raw in ("(null)", "None", None):
+        account_raw = ""
+
     con.execute("""
         INSERT INTO job_history
             (cluster, job_id, job_name, state, exit_code, reason, elapsed,
              nodes, gres, partition, submitted, started, ended_at, log_path,
-             board_visible, dependency, project, node_list)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             board_visible, dependency, project, node_list, account)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(cluster, job_id) DO UPDATE SET
             job_name    = COALESCE(NULLIF(excluded.job_name, ''), job_name),
             state       = excluded.state,
@@ -313,7 +318,8 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
             board_visible = excluded.board_visible,
             dependency  = COALESCE(NULLIF(excluded.dependency, ''), dependency),
             project     = COALESCE(NULLIF(excluded.project, ''), project),
-            node_list   = COALESCE(NULLIF(excluded.node_list, ''), node_list)
+            node_list   = COALESCE(NULLIF(excluded.node_list, ''), node_list),
+            account     = COALESCE(NULLIF(excluded.account, ''), account)
     """, (
         cluster, job["jobid"],
         job_name,
@@ -322,7 +328,7 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
         job.get("nodes"), job.get("gres"), job.get("partition"),
         job.get("submitted"), job.get("started"),
         job.get("ended_at"), job.get("log_path"),
-        bv, dep_raw, project, node_list_raw,
+        bv, dep_raw, project, node_list_raw, account_raw,
     ))
     con.commit()
     con.close()

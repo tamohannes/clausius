@@ -852,32 +852,9 @@ const _PPP_COLORS = ['ppp-c0', 'ppp-c1', 'ppp-c2'];
 
 const _COMPUTE_CACHE_KEY = 'clausius.computeCache';
 
-function _saveComputeCache() {
-  try {
-    localStorage.setItem(_COMPUTE_CACHE_KEY, JSON.stringify({
-      ts: Date.now(),
-      alloc: _pppAllocData,
-      overlay: _pppOverlayData,
-      myFs: _myFairshareData,
-      teamJobs: _teamJobsData,
-      partitions: _partitionData,
-    }));
-  } catch (_) {}
-}
-
+function _saveComputeCache() {}
 function _loadComputeCache() {
-  try {
-    const raw = localStorage.getItem(_COMPUTE_CACHE_KEY);
-    if (!raw) return false;
-    const c = JSON.parse(raw);
-    if (!c.alloc || Date.now() - c.ts > 3600000) return false;
-    _pppAllocData = c.alloc;
-    if (c.overlay) _pppOverlayData = c.overlay;
-    if (c.myFs) _myFairshareData = c.myFs;
-    if (c.teamJobs) _teamJobsData = c.teamJobs;
-    if (c.partitions) _partitionData = c.partitions;
-    return true;
-  } catch (_) {}
+  try { localStorage.removeItem(_COMPUTE_CACHE_KEY); } catch (_) {}
   return false;
 }
 
@@ -1197,7 +1174,19 @@ function _renderPppAllocations(data) {
       for (const j of acctJobs) {
         if (j.user === currentUser) myTotalSqueue += (j.gpus || 0);
       }
-      let myTotal = Math.max(myTotalAihub, myTotalSqueue);
+      if (!hasJobSplit && typeof allData !== 'undefined' && allData[cn]) {
+        const liveJobs = (allData[cn].jobs || []).filter(j => !j._pinned);
+        for (const j of liveJobs) {
+          const s = (j.state || '').toUpperCase();
+          if (s === 'RUNNING' || s === 'COMPLETING') {
+            const gm = (j.gres || '').match(/gpu[^:]*:(?:[a-zA-Z]\w*:)?(\d+)/);
+            const n = parseInt(j.nodes, 10) || 0;
+            const gpn = gm ? parseInt(gm[1], 10) : 8;
+            myTotalSqueue += n * gpn;
+          }
+        }
+      }
+      let myTotal = (hasJobSplit || myTotalSqueue > 0) ? myTotalSqueue : myTotalAihub;
       myTotal = Math.min(myTotal, consumed || myTotal);
       teamOthersTotal = Math.min(teamOthersTotal, Math.max(0, (consumed || 0) - myTotal));
       const pppNonTeam = Math.max(0, consumed - myTotal - teamOthersTotal);
@@ -1374,149 +1363,6 @@ function _renderPppAllocations(data) {
   }
   html += '</div>';
   el.innerHTML = html;
-}
-
-/* ── GPU Usage History Chart ── */
-
-let _historyChart = null;
-let _historyDays = 14;
-
-function setHistoryDays(d) {
-  _historyDays = d;
-  document.querySelectorAll('.history-range-btns .btn-sm').forEach(b => {
-    b.classList.toggle('active', parseInt(b.dataset.days) === d);
-  });
-  refreshUsageHistory();
-}
-
-async function refreshUsageHistory() {
-  const cluster = document.getElementById('history-cluster')?.value || '';
-  const params = new URLSearchParams({ days: _historyDays });
-  if (cluster) params.set('cluster', cluster);
-
-  try {
-    const res = await fetch('/api/aihub/history?' + params);
-    const data = await res.json();
-    if (data.status === 'ok') _renderHistoryChart(data);
-  } catch (_) {}
-}
-
-const _CHART_COLORS = {
-  'reasoning': { line: '#558B2F', fill: 'rgba(85,139,47,0.12)', dash: '#558B2F' },
-  'robustness': { line: '#A4D65E', fill: 'rgba(164,214,94,0.12)', dash: '#A4D65E' },
-  'long-context': { line: '#7CB342', fill: 'rgba(124,179,66,0.12)', dash: '#7CB342' },
-};
-
-function _chartColor(acct) {
-  const short = _shortAcct(acct);
-  return _CHART_COLORS[short] || { line: '#888', fill: 'rgba(136,136,136,0.1)', dash: '#888' };
-}
-
-function _renderHistoryChart(data) {
-  const canvas = document.getElementById('history-chart');
-  if (!canvas) return;
-
-  if (_historyChart) {
-    _historyChart.destroy();
-    _historyChart = null;
-  }
-
-  const allClusters = data.clusters || {};
-  const clusterNames = Object.keys(allClusters);
-  if (!clusterNames.length) return;
-
-  const merged = {};
-  for (const [cn, series] of Object.entries(allClusters)) {
-    for (const [acct, points] of Object.entries(series)) {
-      const label = clusterNames.length > 1 ? `${_shortAcct(acct)} (${cn})` : _shortAcct(acct);
-      merged[label] = { acct, points };
-    }
-  }
-
-  const allDates = new Set();
-  for (const { points } of Object.values(merged)) {
-    for (const p of points) allDates.add(p.date);
-  }
-  const labels = [...allDates].sort();
-
-  const datasets = [];
-  for (const [label, { acct, points }] of Object.entries(merged)) {
-    const colors = _chartColor(acct);
-    const dateMap = {};
-    for (const p of points) dateMap[p.date] = p;
-
-    datasets.push({
-      label: label + ' (consumed)',
-      data: labels.map(d => dateMap[d]?.gpus_consumed ?? null),
-      borderColor: colors.line,
-      backgroundColor: colors.fill,
-      fill: true,
-      tension: 0.3,
-      pointRadius: 2,
-      pointHoverRadius: 5,
-      borderWidth: 2,
-    });
-
-    datasets.push({
-      label: label + ' (allocated)',
-      data: labels.map(d => dateMap[d]?.gpus_allocated ?? null),
-      borderColor: colors.dash,
-      borderDash: [6, 3],
-      fill: false,
-      tension: 0,
-      pointRadius: 0,
-      borderWidth: 1.5,
-    });
-  }
-
-  const ctx = canvas.getContext('2d');
-  _historyChart = new Chart(ctx, {
-    type: 'line',
-    data: { labels, datasets },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: {
-          position: 'bottom',
-          labels: {
-            font: { family: "'JetBrains Mono', monospace", size: 10 },
-            boxWidth: 16,
-            padding: 12,
-            filter: item => item.text.includes('consumed'),
-          },
-        },
-        tooltip: {
-          titleFont: { family: "'JetBrains Mono', monospace", size: 11 },
-          bodyFont: { family: "'JetBrains Mono', monospace", size: 10 },
-          callbacks: {
-            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y ?? '—'} GPUs`,
-          },
-        },
-      },
-      scales: {
-        x: {
-          grid: { display: false },
-          ticks: {
-            font: { family: "'JetBrains Mono', monospace", size: 9 },
-            maxRotation: 0,
-            callback: (val, i) => {
-              const d = labels[i];
-              return d ? d.slice(5) : '';
-            },
-          },
-        },
-        y: {
-          beginAtZero: true,
-          grid: { color: 'rgba(128,128,128,0.1)' },
-          ticks: {
-            font: { family: "'JetBrains Mono', monospace", size: 9 },
-          },
-        },
-      },
-    },
-  });
 }
 
 let _pppOverlayData = null;
@@ -1712,7 +1558,6 @@ function _populateAccountSelect() {
 
 async function initClustersPage() {
   refreshPppAllocations().then(() => _populateAccountSelect());
-  refreshUsageHistory();
 }
 
 /* ── Team Jobs ── */

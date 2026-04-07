@@ -54,14 +54,14 @@ applyTheme();
 
 // ── Keyboard shortcuts config ──
 const SHORTCUT_DEFAULTS = {
-  toggleSidebar: { label: 'Toggle sidebar',   key: 's',   meta: true,  ctrl: false, shift: false },
-  openSpotlight: { label: 'Spotlight search',  key: 'p',   meta: true,  ctrl: false, shift: false },
-  closeTab:      { label: 'Close tab',         key: 'w',   meta: true,  ctrl: false, shift: false },
-  nextTab:       { label: 'Next tab',          key: ']',   meta: true,  ctrl: false, shift: false },
-  prevTab:       { label: 'Previous tab',      key: '[',   meta: true,  ctrl: false, shift: false },
-  refreshLive:   { label: 'Refresh live data', key: 'r',   meta: true,  ctrl: false, shift: true  },
-  exportEntry:   { label: 'Export entry',      key: 's',   meta: true,  ctrl: false, shift: true  },
-  goBack:        { label: 'Go back',           key: 'ArrowLeft', meta: false, ctrl: false, shift: false, alt: true },
+  toggleSidebar: { label: 'Toggle sidebar',   key: 's',   code: 'KeyS',        meta: true,  ctrl: false, shift: false },
+  openSpotlight: { label: 'Spotlight search',  key: 'p',   code: 'KeyP',        meta: true,  ctrl: false, shift: false },
+  closeTab:      { label: 'Close tab',         key: 'w',   code: 'KeyW',        meta: true,  ctrl: false, shift: false },
+  nextTab:       { label: 'Next tab',          key: ']',   code: 'BracketRight', meta: true,  ctrl: false, shift: true  },
+  prevTab:       { label: 'Previous tab',      key: '[',   code: 'BracketLeft',  meta: true,  ctrl: false, shift: true  },
+  refreshLive:   { label: 'Refresh live data', key: 'r',   code: 'KeyR',        meta: false, ctrl: false, shift: true, alt: true },
+  exportEntry:   { label: 'Export entry',      key: 's',   code: 'KeyS',        meta: true,  ctrl: false, shift: true  },
+  goBack:        { label: 'Go back',           key: 'ArrowLeft', code: 'ArrowLeft', meta: false, ctrl: false, shift: false, alt: true },
 };
 
 let _shortcuts = {};
@@ -73,7 +73,14 @@ function loadShortcuts() {
       const saved = JSON.parse(raw);
       _shortcuts = {};
       for (const [id, def] of Object.entries(SHORTCUT_DEFAULTS)) {
-        _shortcuts[id] = saved[id] ? { ...def, ...saved[id] } : { ...def };
+        if (saved[id]) {
+          const s = saved[id];
+          const d = def;
+          const isOldDefault = !s.code && s.key === d.key && !!s.meta === !!d.meta && !s.shift && !!d.shift;
+          _shortcuts[id] = isOldDefault ? { ...d } : { ...d, ...s };
+        } else {
+          _shortcuts[id] = { ...def };
+        }
       }
       return;
     }
@@ -95,7 +102,10 @@ function getShortcut(id) {
 function matchesShortcut(e, id) {
   const s = getShortcut(id);
   if (!s) return false;
-  if (e.key !== s.key && e.key.toLowerCase() !== s.key.toLowerCase()) return false;
+  const keyMatch = s.code
+    ? e.code === s.code
+    : (e.key === s.key || e.key.toLowerCase() === s.key.toLowerCase());
+  if (!keyMatch) return false;
   const needMeta = !!s.meta;
   const needCtrl = !!s.ctrl;
   const needShift = !!s.shift;
@@ -108,19 +118,29 @@ function matchesShortcut(e, id) {
   return true;
 }
 
+function _codeToLabel(code) {
+  if (!code) return null;
+  const map = {
+    BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';',
+    Quote: "'", Comma: ',', Period: '.', Slash: '/', Minus: '-', Equal: '=',
+    Backquote: '`', Space: 'Space', Tab: '\u21E5', Enter: '\u21A9',
+    Backspace: '\u232B', Delete: 'Del', Escape: 'Esc',
+    ArrowLeft: '\u2190', ArrowRight: '\u2192', ArrowUp: '\u2191', ArrowDown: '\u2193',
+  };
+  if (map[code]) return map[code];
+  if (code.startsWith('Key')) return code.slice(3);
+  if (code.startsWith('Digit')) return code.slice(5);
+  return null;
+}
+
 function _formatShortcutKeys(s) {
   const parts = [];
   if (s.meta) parts.push(navigator.platform.includes('Mac') ? '\u2318' : 'Ctrl');
   if (s.ctrl && !s.meta) parts.push('Ctrl');
   if (s.alt) parts.push(navigator.platform.includes('Mac') ? '\u2325' : 'Alt');
   if (s.shift) parts.push('\u21E7');
-  let k = s.key;
-  if (k === 'Tab') k = '\u21E5';
-  else if (k === 'ArrowLeft') k = '\u2190';
-  else if (k === 'ArrowRight') k = '\u2192';
-  else if (k === 'ArrowUp') k = '\u2191';
-  else if (k === 'ArrowDown') k = '\u2193';
-  else if (k.length === 1) k = k.toUpperCase();
+  let k = _codeToLabel(s.code) || s.key;
+  if (k.length === 1) k = k.toUpperCase();
   parts.push(k);
   return parts;
 }
@@ -162,6 +182,7 @@ function startRecordingShortcut(id) {
     _shortcuts[id] = {
       ..._shortcuts[id],
       key: e.key,
+      code: e.code,
       meta: e.metaKey,
       ctrl: e.ctrlKey,
       shift: e.shiftKey,
@@ -644,7 +665,8 @@ function toastLoading(msg) {
 // ── Countdown ──
 function refreshNow() {
   clearInterval(cdTimer);
-  fetchAll();
+  if (typeof _forceRefreshAll === 'function') _forceRefreshAll();
+  else fetchAll();
   if (refreshIntervalSec > 0) {
     countdown = refreshIntervalSec;
     startCountdown();

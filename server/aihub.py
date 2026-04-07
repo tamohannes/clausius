@@ -102,18 +102,20 @@ def _fetch_cluster_occupancy_snapshot(os_clusters=None):
     query = {
         "query": {"bool": {"filter": [
             {"term": {"s_doc": "slurm_cluster_occupancy_hourly"}},
-            {"range": {"ts_created": {
-                "gte": _date_str(1), "lte": "now",
-                "time_zone": "America/Los_Angeles",
-            }}},
+            {"range": {"ts_created": {"gte": _date_str(2), "lte": "now", "time_zone": "America/Los_Angeles"}}},
         ]}},
         "size": 0,
         "aggs": {
             "cluster": {
                 "terms": {"field": "s_cluster", "size": 50},
                 "aggs": {
-                    "occupied": {"avg": {"field": "l_avg_occupied_gpus"}},
-                    "total": {"avg": {"field": "l_avg_operator_total_gpus"}},
+                    "latest": {
+                        "top_hits": {
+                            "size": 1,
+                            "sort": [{"ts_created": {"order": "desc"}}],
+                            "_source": ["l_avg_occupied_gpus", "l_avg_operator_total_gpus"],
+                        }
+                    },
                 },
             }
         },
@@ -128,8 +130,12 @@ def _fetch_cluster_occupancy_snapshot(os_clusters=None):
     result = {}
     for cb in resp.get("aggregations", {}).get("cluster", {}).get("buckets", []):
         friendly = _friendly_cluster(cb["key"])
-        occupied = cb["occupied"]["value"] or 0
-        total = cb["total"]["value"] or 0
+        hits = cb.get("latest", {}).get("hits", {}).get("hits", [])
+        if not hits:
+            continue
+        src = hits[0].get("_source", {})
+        occupied = src.get("l_avg_occupied_gpus", 0) or 0
+        total = src.get("l_avg_operator_total_gpus", 0) or 0
         if total > 0:
             result[friendly] = {"occupied": round(occupied), "total": round(total)}
     return result
@@ -152,6 +158,11 @@ def get_ppp_allocations(accounts=None, clusters=None):
 
     os_clusters = _os_cluster_names(clusters)
 
+    _alloc_fields = [
+        "l_gpus_allocated", "l_gpus_consumed", "l_gpus_consumed_normal",
+        "l_gpus_consumed_free", "l_operator_fairshare_avail_gpus",
+        "d_fairshare_normalized", "d_level_fs", "l_gpus_pending_eligible",
+    ]
     query = {
         "query": {
             "bool": {
@@ -159,7 +170,7 @@ def get_ppp_allocations(accounts=None, clusters=None):
                     {"term": {"s_doc": "account_gpus_hourly"}},
                     {"terms": {"s_account": accts}},
                     {"range": {"ts_created": {
-                        "gte": _date_str(3),
+                        "gte": _date_str(2),
                         "lte": "now",
                         "time_zone": "America/Los_Angeles",
                     }}},
@@ -174,14 +185,13 @@ def get_ppp_allocations(accounts=None, clusters=None):
                     "account": {
                         "terms": {"field": "s_account", "size": 20},
                         "aggs": {
-                            "gpus_allocated": {"avg": {"field": "l_gpus_allocated"}},
-                            "gpus_consumed": {"avg": {"field": "l_gpus_consumed"}},
-                            "gpus_consumed_normal": {"avg": {"field": "l_gpus_consumed_normal"}},
-                            "gpus_consumed_free": {"avg": {"field": "l_gpus_consumed_free"}},
-                            "fairshare_avail": {"avg": {"field": "l_operator_fairshare_avail_gpus"}},
-                            "fairshare_normalized": {"avg": {"field": "d_fairshare_normalized"}},
-                            "level_fs": {"avg": {"field": "d_level_fs"}},
-                            "pending_eligible": {"avg": {"field": "l_gpus_pending_eligible"}},
+                            "latest": {
+                                "top_hits": {
+                                    "size": 1,
+                                    "sort": [{"ts_created": {"order": "desc"}}],
+                                    "_source": _alloc_fields,
+                                }
+                            },
                         },
                     }
                 },
@@ -206,10 +216,14 @@ def get_ppp_allocations(accounts=None, clusters=None):
 
         for ab in cb.get("account", {}).get("buckets", []):
             acct = ab["key"]
-            allocated = ab["gpus_allocated"]["value"] or 0
-            consumed = ab["gpus_consumed"]["value"] or 0
-            fs_avail = ab["fairshare_avail"]["value"] or 0
-            level_fs = ab["level_fs"]["value"] or 0
+            hits = ab.get("latest", {}).get("hits", {}).get("hits", [])
+            if not hits:
+                continue
+            src = hits[0].get("_source", {})
+            allocated = src.get("l_gpus_allocated", 0) or 0
+            consumed = src.get("l_gpus_consumed", 0) or 0
+            fs_avail = src.get("l_operator_fairshare_avail_gpus", 0) or 0
+            level_fs = src.get("d_level_fs", 0) or 0
 
             if allocated <= 0:
                 continue
@@ -220,12 +234,12 @@ def get_ppp_allocations(accounts=None, clusters=None):
             cluster_data["accounts"][acct] = {
                 "gpus_allocated": round(allocated),
                 "gpus_consumed": round(consumed),
-                "gpus_consumed_normal": round(ab["gpus_consumed_normal"]["value"] or 0),
-                "gpus_consumed_free": round(ab["gpus_consumed_free"]["value"] or 0),
+                "gpus_consumed_normal": round(src.get("l_gpus_consumed_normal", 0) or 0),
+                "gpus_consumed_free": round(src.get("l_gpus_consumed_free", 0) or 0),
                 "fairshare_avail_gpus": round(fs_avail),
-                "fairshare_normalized": round(ab["fairshare_normalized"]["value"] or 0, 6),
+                "fairshare_normalized": round(src.get("d_fairshare_normalized", 0) or 0, 6),
                 "level_fs": round(capped_fs, 3),
-                "pending_eligible": round(ab["pending_eligible"]["value"] or 0),
+                "pending_eligible": round(src.get("l_gpus_pending_eligible", 0) or 0),
                 "utilization_pct": round(consumed / allocated * 100, 1) if allocated > 0 else 0,
                 "headroom": headroom,
             }
@@ -524,7 +538,7 @@ def get_user_overlay(users=None, accounts=None, clusters=None):
                     {"terms": {"s_account": accts}},
                     {"terms": {"s_user": users}},
                     {"range": {"ts_created": {
-                        "gte": _date_str(3),
+                        "gte": _date_str(2),
                         "lte": "now",
                         "time_zone": "America/Los_Angeles",
                     }}},
@@ -542,7 +556,13 @@ def get_user_overlay(users=None, accounts=None, clusters=None):
                             "user": {
                                 "terms": {"field": "s_user", "size": 200},
                                 "aggs": {
-                                    "consumed": {"avg": {"field": "l_gpus_consumed"}},
+                                    "latest": {
+                                        "top_hits": {
+                                            "size": 1,
+                                            "sort": [{"ts_created": {"order": "desc"}}],
+                                            "_source": ["l_gpus_consumed"],
+                                        }
+                                    },
                                 },
                             }
                         },
@@ -567,7 +587,10 @@ def get_user_overlay(users=None, accounts=None, clusters=None):
             acct = ab["key"]
             user_map = {}
             for ub in ab.get("user", {}).get("buckets", []):
-                consumed = ub["consumed"]["value"] or 0
+                hits = ub.get("latest", {}).get("hits", {}).get("hits", [])
+                consumed = 0
+                if hits:
+                    consumed = hits[0].get("_source", {}).get("l_gpus_consumed", 0) or 0
                 if consumed >= 0.5:
                     user_map[ub["key"]] = round(consumed)
             if user_map:
@@ -610,6 +633,7 @@ def get_my_fairshare(user=None, accounts=None, clusters=None):
 
     os_clusters = _os_cluster_names(clusters)
 
+    _fs_fields = ["d_level_fs", "l_gpus_consumed", "d_norm_shares", "d_norm_usage"]
     query = {
         "query": {
             "bool": {
@@ -618,7 +642,7 @@ def get_my_fairshare(user=None, accounts=None, clusters=None):
                     {"terms": {"s_account": accts}},
                     {"term": {"s_user": user}},
                     {"range": {"ts_created": {
-                        "gte": _date_str(3),
+                        "gte": _date_str(2),
                         "lte": "now",
                         "time_zone": "America/Los_Angeles",
                     }}},
@@ -633,10 +657,13 @@ def get_my_fairshare(user=None, accounts=None, clusters=None):
                     "account": {
                         "terms": {"field": "s_account", "size": 20},
                         "aggs": {
-                            "level_fs": {"avg": {"field": "d_level_fs"}},
-                            "consumed": {"avg": {"field": "l_gpus_consumed"}},
-                            "norm_shares": {"avg": {"field": "d_norm_shares"}},
-                            "norm_usage": {"avg": {"field": "d_norm_usage"}},
+                            "latest": {
+                                "top_hits": {
+                                    "size": 1,
+                                    "sort": [{"ts_created": {"order": "desc"}}],
+                                    "_source": _fs_fields,
+                                }
+                            },
                         },
                     }
                 },
@@ -656,10 +683,14 @@ def get_my_fairshare(user=None, accounts=None, clusters=None):
         friendly = _friendly_cluster(cb["key"])
         acct_data = {}
         for ab in cb.get("account", {}).get("buckets", []):
-            level_fs = ab["level_fs"]["value"] or 0
+            hits = ab.get("latest", {}).get("hits", {}).get("hits", [])
+            if not hits:
+                continue
+            src = hits[0].get("_source", {})
+            level_fs = src.get("d_level_fs", 0) or 0
             acct_data[ab["key"]] = {
                 "level_fs": round(min(level_fs, 10.0), 3),
-                "consumed": round(ab["consumed"]["value"] or 0),
+                "consumed": round(src.get("l_gpus_consumed", 0) or 0),
             }
         if acct_data:
             result["clusters"][friendly] = acct_data
