@@ -1133,12 +1133,28 @@ function _renderPppAllocations(data) {
   };
 
   const allClusterNames = [...new Set([...Object.keys(clusters), ...partOnlySet])];
+  const _idleGpus = (cn) => {
+    const ps = _partitionData?.[cn];
+    if (!ps) return 0;
+    const gpn = ps.partitions?.[0]?.gpus_per_node || CLUSTERS[cn]?.gpus_per_node || 8;
+    return (ps.idle_nodes || 0) * gpn;
+  };
+  const _myJobGpus = (cn) => {
+    const s = _teamJobsData?.clusters?.[cn]?.summary?.by_user?.[USERNAME];
+    return s ? (s.running || 0) + (s.pending || 0) + (s.dependent || 0) : 0;
+  };
   const names = allClusterNames.sort((a, b) => {
     const aAlloc = clusters[a]?.team_gpu_alloc ?? _teamGpuAlloc[a];
     const bAlloc = clusters[b]?.team_gpu_alloc ?? _teamGpuAlloc[b];
     const aActive = (aAlloc === 'any' || (typeof aAlloc === 'number' && aAlloc > 0)) ? 0 : 1;
     const bActive = (bAlloc === 'any' || (typeof bAlloc === 'number' && bAlloc > 0)) ? 0 : 1;
     if (aActive !== bActive) return aActive - bActive;
+    const aMyJobs = _myJobGpus(a) > 0 ? 0 : 1;
+    const bMyJobs = _myJobGpus(b) > 0 ? 0 : 1;
+    if (aMyJobs !== bMyJobs) return aMyJobs - bMyJobs;
+    const aIdle = _idleGpus(a);
+    const bIdle = _idleGpus(b);
+    if (aIdle !== bIdle) return bIdle - aIdle;
     const aGpu = _gpuRank(a);
     const bGpu = _gpuRank(b);
     if (aGpu !== bGpu) return aGpu - bGpu;

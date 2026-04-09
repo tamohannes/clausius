@@ -691,7 +691,14 @@ function startCountdown() {
     if (_isModalOpen()) return;
     countdown--;
     document.getElementById('cd').textContent = countdown;
-    if (countdown <= 0) { countdown = refreshIntervalSec; fetchAll(); }
+    if (countdown <= 0) {
+      countdown = refreshIntervalSec;
+      if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
+        refreshPppAllocations();
+      } else {
+        fetchAll();
+      }
+    }
   }, 1000);
 }
 

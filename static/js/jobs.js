@@ -578,29 +578,45 @@ function _persistActiveSet() {
   try { localStorage.setItem('clausius.activeClusters', JSON.stringify([..._lastActiveSet])); } catch (_) {}
 }
 
+let _prevSectionMap = {};
+let _transitioned = {};
+
 function groupClusters(data) {
   const local   = [];
   const active  = [];
   const idle    = [];
   const failed  = [];
+  const sectionMap = {};
 
   for (const name of Object.keys(CLUSTERS)) {
     const d = data[name];
     if (!d) continue;
-    if (name === 'local') { local.push(name); continue; }
-    if (d.status === 'error') { failed.push(name); continue; }
+    if (name === 'local') { local.push(name); sectionMap[name] = 'local'; continue; }
+    if (d.status === 'error') { failed.push(name); sectionMap[name] = 'unreachable'; continue; }
     const liveJobs = (d.jobs || []).filter(j => !j._pinned);
     const hasFreshData = !!d.updated;
     if (liveJobs.length > 0) {
       active.push(name);
       _lastActiveSet.add(name);
+      sectionMap[name] = 'active';
     } else if (!hasFreshData && _lastActiveSet.has(name)) {
       active.push(name);
+      sectionMap[name] = 'active';
     } else {
       idle.push(name);
       _lastActiveSet.delete(name);
+      sectionMap[name] = 'idle';
     }
   }
+
+  _transitioned = {};
+  for (const name of Object.keys(sectionMap)) {
+    const prev = _prevSectionMap[name];
+    if (prev && prev !== sectionMap[name]) {
+      _transitioned[name] = { from: prev, to: sectionMap[name] };
+    }
+  }
+  _prevSectionMap = sectionMap;
 
   _persistActiveSet();
   return { local, active, idle, failed };
@@ -630,10 +646,27 @@ function renderGroupLabel(dot, color, text, count, sectionName, toggleable) {
 function renderGrid(data) {
   const grid = document.getElementById('grid');
   const { local, active, idle, failed } = groupClusters(data);
+
+  const hasTransitions = Object.keys(_transitioned).length > 0;
+  if (hasTransitions) {
+    for (const t of Object.values(_transitioned)) {
+      if (sectionCollapsed[t.to]) {
+        sectionCollapsed[t.to] = false;
+        localStorage.setItem('clausius.sectionCollapsed', JSON.stringify(sectionCollapsed));
+      }
+    }
+  }
+
   const sectionGrid = (names, onlyIfHasRuns) => {
     const hasRuns = names.length === 1 && !!(data[names[0]] && (data[names[0]].jobs || []).length);
     const single = names.length === 1 && (!onlyIfHasRuns || hasRuns);
-    return `<div class="grid${single ? ' single-card' : ''}">${names.map(n => renderCard(n, data[n] || {status:'error',error:'No response',jobs:[]})).join('')}</div>`;
+    return `<div class="grid${single ? ' single-card' : ''}">${names.map(n => {
+      const t = _transitioned[n];
+      const cls = t ? ' card-transition' : '';
+      const tag = t ? ` data-from="${t.from}" data-to="${t.to}"` : '';
+      const cardHtml = renderCard(n, data[n] || {status:'error',error:'No response',jobs:[]});
+      return cls ? cardHtml.replace(/class="card/, `class="card${cls}"${tag} `) : cardHtml;
+    }).join('')}</div>`;
   };
 
   let html = '';
