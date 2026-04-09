@@ -1101,7 +1101,9 @@ function _renderSubmitSummary(clusters) {
       <span class="ws-headroom">${c.freeForTeam} free</span>
       ${(() => {
         const cps = _partitionData?.[c.cn];
-        return cps ? `<span class="ws-idle">${cps.idle_nodes || 0} idle</span>` : '';
+        if (!cps) return '';
+        const gpn = cps.partitions?.[0]?.gpus_per_node || CLUSTERS[c.cn]?.gpus_per_node || 8;
+        return `<span class="ws-idle">${(cps.idle_nodes || 0) * gpn} free</span>`;
       })()}
       ${acctShort ? `<span class="ws-acct">via ${acctShort}</span>` : ''}
       ${(() => {
@@ -1119,15 +1121,29 @@ function _renderPppAllocations(data) {
   if (!el) return;
   const clusters = data.clusters || {};
   const configOrder = Object.keys(CLUSTERS).filter(c => c !== 'local');
-  const names = Object.keys(clusters).sort((a, b) => {
-    const aAlloc = clusters[a].team_gpu_alloc;
-    const bAlloc = clusters[b].team_gpu_alloc;
-    const aHas = aAlloc === 'any' || (typeof aAlloc === 'number' && aAlloc > 0) ? 0 : 1;
-    const bHas = bAlloc === 'any' || (typeof bAlloc === 'number' && bAlloc > 0) ? 0 : 1;
-    if (aHas !== bHas) return aHas - bHas;
-    const ai = configOrder.indexOf(a);
-    const bi = configOrder.indexOf(b);
-    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+  const partOnlySet = new Set();
+  if (_partitionData) {
+    for (const cn of Object.keys(_partitionData)) {
+      if (cn !== 'local' && !clusters[cn]) partOnlySet.add(cn);
+    }
+  }
+  const _gpuMemRank = { 'GB200': 0, 'B200': 1, 'H200': 2, 'H100': 3, 'A100': 4, 'L40S': 5 };
+  const _gpuRank = (cn) => {
+    const gt = (clusters[cn]?.gpu_type || CLUSTERS[cn]?.gpu_type || '').toUpperCase();
+    return _gpuMemRank[gt] ?? 99;
+  };
+
+  const allClusterNames = [...new Set([...Object.keys(clusters), ...partOnlySet])];
+  const names = allClusterNames.sort((a, b) => {
+    const aAlloc = clusters[a]?.team_gpu_alloc ?? _teamGpuAlloc[a];
+    const bAlloc = clusters[b]?.team_gpu_alloc ?? _teamGpuAlloc[b];
+    const aActive = (aAlloc === 'any' || (typeof aAlloc === 'number' && aAlloc > 0)) ? 0 : 1;
+    const bActive = (bAlloc === 'any' || (typeof bAlloc === 'number' && bAlloc > 0)) ? 0 : 1;
+    if (aActive !== bActive) return aActive - bActive;
+    const aGpu = _gpuRank(a);
+    const bGpu = _gpuRank(b);
+    if (aGpu !== bGpu) return aGpu - bGpu;
+    return a.localeCompare(b);
   });
   if (!names.length) {
     el.innerHTML = '<div class="no-jobs">No allocation data available</div>';
@@ -1138,6 +1154,120 @@ function _renderPppAllocations(data) {
   html += '<div class="ppp-grid">';
   for (const cn of names) {
     const cd = clusters[cn];
+    if (!cd) {
+      const ps = _partitionData?.[cn];
+      if (ps) {
+        const parts = (ps.partitions || []).filter(p => p.total_nodes > 0);
+        if (parts.length) {
+          const gpuType = ps.gpu_type || '';
+          const idleNodes = ps.idle_nodes || 0;
+          const pendingJobs = ps.pending_jobs || 0;
+          const totalNodes = ps.total_nodes || 0;
+          const gpuPer = parts[0]?.gpus_per_node || 8;
+          const totalGpus = totalNodes * gpuPer;
+          const usedGpus = (totalNodes - idleNodes) * gpuPer;
+          const idleGpusP = idleNodes * gpuPer;
+          const idleCls = idleGpusP > 0 ? 'ppp-idle-ok' : 'ppp-idle-none';
+
+          const teamAlloc = _teamGpuAlloc[cn];
+          const teamNum = teamAlloc === 'any' ? null : (typeof teamAlloc === 'number' && teamAlloc > 0 ? teamAlloc : null);
+          const teamScale = document.getElementById('ppp-scale-toggle')?.checked ?? false;
+          const showMe = document.getElementById('ppp-my-toggle')?.checked ?? false;
+          const showTeamUsage = document.getElementById('ppp-team-usage-toggle')?.checked ?? false;
+          const hasTeamQuota = teamAlloc === 'any' || (teamNum && teamNum > 0);
+
+          const tjCluster = _teamJobsData?.clusters?.[cn];
+          const tjJobs = tjCluster?.jobs || [];
+          const tjSummary = tjCluster?.summary || {};
+          const currentUser = USERNAME;
+
+          const acctSet = new Set();
+          for (const j of tjJobs) { if (j.account) acctSet.add(j.account); }
+          if (!acctSet.size) {
+            const cfgAcct = CLUSTERS[cn]?.account || '';
+            for (const a of cfgAcct.split(',')) { if (a.trim()) acctSet.add(a.trim()); }
+          }
+          const acctList = [...acctSet].sort();
+
+          let teamAllocMarker = '';
+          if (teamNum) {
+            const mPct = Math.min(98, Math.round(teamNum / (teamScale && teamNum > 0 ? teamNum * 1.2 : totalGpus) * 100));
+            teamAllocMarker = `<div class="ppp-team-marker" style="left:${mPct}%"></div>`;
+          }
+
+          html += `<div class="ppp-card${hasTeamQuota ? '' : ' ppp-card-dim'} ppp-card-partonly">
+            <div class="ppp-card-head">
+              <span class="ppp-card-cluster">${cn}</span>
+              ${gpuType ? `<span class="ppp-card-gpu">${gpuType}</span>` : ''}
+              <span class="ppp-card-gpu" style="opacity:0.5">no PPP data</span>
+              ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
+            </div>
+            <div class="ppp-card-live"><span class="${idleCls}">${idleGpusP} idle</span> · ${pendingJobs} queued</div>`;
+
+          if (acctList.length > 0) {
+            for (const acct of acctList) {
+              const acctJobs = tjJobs.filter(j => j.account === acct);
+              let myRun = 0, myPend = 0, teamRun = 0, teamPend = 0, totalAcctGpus = 0;
+              for (const j of acctJobs) {
+                const g = j.gpus || 0;
+                totalAcctGpus += g;
+                if (j.user === currentUser) {
+                  if (j.state === 'RUNNING') myRun += g; else myPend += g;
+                } else {
+                  if (j.state === 'RUNNING') teamRun += g; else teamPend += g;
+                }
+              }
+              const barMax = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : totalGpus;
+              const toPct = (v) => Math.min(100, Math.round(v / barMax * 100));
+              let segments = '';
+              if (showMe && myRun > 0) segments += `<div class="ppp-seg ppp-seg-me-run" style="width:${toPct(myRun)}%"></div>`;
+              if (showMe && myPend > 0) segments += `<div class="ppp-seg ppp-seg-me-pend" style="width:${toPct(myPend)}%"></div>`;
+              if (showTeamUsage && teamRun > 0) segments += `<div class="ppp-seg ppp-seg-team-run" style="width:${toPct(teamRun)}%"></div>`;
+              if (showTeamUsage && teamPend > 0) segments += `<div class="ppp-seg ppp-seg-team-pend" style="width:${toPct(teamPend)}%"></div>`;
+              html += `<div class="ppp-acct-row">
+                <span class="ppp-acct-name" title="${acct}">${_shortAcct(acct)}</span>
+                <div class="ppp-bar-outer">
+                  <div class="ppp-bar-wrap">${segments}</div>
+                  ${teamAllocMarker}
+                </div>
+                <span class="ppp-acct-nums"><strong>${totalAcctGpus}</strong> GPUs</span>
+              </div>`;
+            }
+          } else {
+            const barMax = (teamScale && teamNum && teamNum > 0) ? teamNum * 1.2 : totalGpus;
+            const toPct = (v) => Math.min(100, Math.round(v / barMax * 100));
+            html += `<div class="ppp-acct-row">
+              <span class="ppp-acct-name">cluster</span>
+              <div class="ppp-bar-outer">
+                <div class="ppp-bar-wrap">
+                  <div class="ppp-seg ppp-seg-ppp-rest" style="width:${toPct(usedGpus)}%"></div>
+                </div>
+                ${teamAllocMarker}
+              </div>
+              <span class="ppp-acct-nums"><strong>${usedGpus}</strong> / ${totalGpus} GPUs</span>
+            </div>`;
+          }
+
+          const hasAnyJobs = tjJobs.length > 0;
+          if (hasAnyJobs) {
+            const legendParts = [];
+            if (showMe) legendParts.push(`<span><span class="ppp-legend-swatch swatch-me"></span>${currentUser} run</span>`);
+            if (showMe) legendParts.push(`<span><span class="ppp-legend-swatch swatch-me-pend"></span>${currentUser} pend</span>`);
+            if (showTeamUsage) legendParts.push(`<span><span class="ppp-legend-swatch swatch-team"></span>team run</span>`);
+            if (showTeamUsage) legendParts.push(`<span><span class="ppp-legend-swatch swatch-team-pend"></span>team pend</span>`);
+            if (legendParts.length) html += `<div class="ppp-overlay-legend">${legendParts.join('')}</div>`;
+          } else {
+            html += `<div class="ppp-overlay-legend" style="opacity:0.5">no active jobs on these accounts</div>`;
+          }
+
+          html += `<div class="ppp-card-footer">
+              <span class="ppp-cluster-occ">${parts.length} partition${parts.length !== 1 ? 's' : ''} · ${totalGpus} total GPUs${teamNum ? ` · team alloc: ${teamNum}` : ''}</span>
+            </div>
+          </div>`;
+        }
+      }
+      continue;
+    }
     const accts = Object.entries(cd.accounts || {}).sort((a, b) => (b[1].gpus_allocated || 0) - (a[1].gpus_allocated || 0));
     if (!accts.length) continue;
     const rawMaxAlloc = Math.max(...accts.map(([, d]) => d.gpus_allocated || 1));
@@ -1156,7 +1286,9 @@ function _renderPppAllocations(data) {
     const ps = _partitionData?.[cn];
     const idleNodes = ps?.idle_nodes || 0;
     const pendingJobs = ps?.pending_jobs || 0;
-    const idleCls = idleNodes > 0 ? 'ppp-idle-ok' : 'ppp-idle-none';
+    const psGpuPer = ps?.partitions?.[0]?.gpus_per_node || CLUSTERS[cn]?.gpus_per_node || 8;
+    const idleGpus = idleNodes * psGpuPer;
+    const idleCls = idleGpus > 0 ? 'ppp-idle-ok' : 'ppp-idle-none';
 
     html += `<div class="ppp-card${hasTeamQuota ? '' : ' ppp-card-dim'}">
       <div class="ppp-card-head">
@@ -1164,7 +1296,7 @@ function _renderPppAllocations(data) {
         ${cd.gpu_type ? `<span class="ppp-card-gpu">${cd.gpu_type}</span>` : ''}
         ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
       </div>
-      ${ps ? `<div class="ppp-card-live"><span class="${idleCls}">${idleNodes} idle</span> · ${pendingJobs} queued</div>` : ''}`;
+      ${ps ? `<div class="ppp-card-live"><span class="${idleCls}">${idleGpus} idle</span> · ${pendingJobs} queued</div>` : ''}`;
 
     const overlayCluster = _pppOverlayData?.clusters?.[cn] || {};
     const currentUser = _pppOverlayData?.current_user || USERNAME;
@@ -1342,7 +1474,7 @@ function _renderPppAllocations(data) {
               <div class="wds-pop-row"><span>resource fit</span><span class="${w.resourceGate >= 1 ? 'green' : w.resourceGate >= 0.5 ? 'amber' : 'red'}">${w.resourceGate >= 1 ? 'fits' : w.resourceGate.toFixed(2)}</span></div>
               <div class="wds-pop-row"><span>your FS</span><span class="${myFsCls}">${w.myLevelFs > 0 ? w.myLevelFs.toFixed(2) : 'no data'}</span></div>
               <div class="wds-pop-row"><span>PPP FS</span><span class="${pppFsCls}">${ad.level_fs.toFixed(2)}</span></div>
-              <div class="wds-pop-row"><span>queue</span><span class="${w.idleNodes > 0 ? (w.queueScore >= 0.5 ? 'green' : 'amber') : 'red'}">${w.idleNodes} idle / ${w.pendingQueue}q</span></div>
+              <div class="wds-pop-row"><span>queue</span><span class="${w.idleNodes > 0 ? (w.queueScore >= 0.5 ? 'green' : 'amber') : 'red'}">${w.idleNodes * (ps?.partitions?.[0]?.gpus_per_node || CLUSTERS[cn]?.gpus_per_node || 8)} idle / ${w.pendingQueue}q</span></div>
               <div class="wds-pop-row"><span>team quota</span><span class="${w.freeForTeam > 0 ? 'green' : w.pppHeadroom > 0 ? 'amber' : 'red'}">${w.freeForTeam > 0 ? `${w.freeForTeam} free` : w.pppHeadroom > 0 ? `over (PPP ${w.pppHeadroom})` : 'full'}</span></div>
             </div>
           </span>`;
@@ -1389,6 +1521,7 @@ function _renderPppAllocations(data) {
       ${clusterTotal > 0 ? `<span class="ppp-cluster-occ" title="Cluster-wide: ${clusterOccupied} / ${clusterTotal} GPUs (our PPPs: ${allPppsConsumed}, others: ${clusterOthers})">${clusterPct}% cluster load</span>` : ''}
     </div></div>`;
   }
+
   html += '</div>';
   el.innerHTML = html;
 }
@@ -1760,10 +1893,12 @@ function partitionChipHtml(clusterName) {
   const idle = ps.idle_nodes || 0;
   const pending = ps.pending_jobs || 0;
   const nParts = ps.gpu_partitions || 0;
-  const cls = idle > 0 ? 'part-has-idle' : (pending > 0 ? 'part-busy' : '');
-  return `<span class="partition-chip ${cls}" title="${nParts} GPU partitions, ${idle} idle nodes, ${pending} pending jobs" onclick="event.stopPropagation();openAdvisor('${clusterName}')">
+  const chipGpn = ps.partitions?.[0]?.gpus_per_node || CLUSTERS[clusterName]?.gpus_per_node || 8;
+  const idleGpusChip = idle * chipGpn;
+  const cls = idleGpusChip > 0 ? 'part-has-idle' : (pending > 0 ? 'part-busy' : '');
+  return `<span class="partition-chip ${cls}" title="${nParts} GPU partitions, ${idleGpusChip} idle GPUs, ${pending} pending jobs" onclick="event.stopPropagation();openAdvisor('${clusterName}')">
     <span class="part-count">${nParts}p</span>
-    ${idle > 0 ? `<span class="part-idle">${idle} idle</span>` : ''}
+    ${idleGpusChip > 0 ? `<span class="part-idle">${idleGpusChip} idle</span>` : ''}
     ${pending > 0 ? `<span class="part-pending">${pending}q</span>` : ''}
   </span>`;
 }
@@ -1843,7 +1978,7 @@ function _renderAdvisorResults(recs) {
       ${acctCell}
       <td><span class="adv-part">${r.partition}</span> ${defaultBadge}${preemptBadge}</td>
       ${fsCell}
-      <td class="dim">${d.idle_nodes}</td>
+      <td class="dim">${d.idle_nodes * (d.gpus_per_node || 8)}</td>
       <td class="dim">${d.pending_jobs}</td>
       <td>
         <span class="adv-occ-bar"><span class="adv-occ-fill ${occLevel}" style="width:${Math.min(d.occupancy_pct, 100)}%"></span></span>
@@ -1860,7 +1995,7 @@ function _renderAdvisorResults(recs) {
   el.innerHTML = `<table class="adv-table">
     <thead><tr>
       <th></th><th>Cluster</th>${acctHdr}<th>Partition</th>
-      ${fsHdr}<th>Idle</th><th>Queue</th><th>Occupancy</th><th>Tier</th><th>Limit</th><th>Notes</th>
+      ${fsHdr}<th>Idle GPUs</th><th>Queue</th><th>Occupancy</th><th>Tier</th><th>Limit</th><th>Notes</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table>`;

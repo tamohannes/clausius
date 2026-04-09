@@ -557,7 +557,10 @@ def api_cancel(cluster, job_id):
         if cluster == "local":
             os.kill(int(job_id), 15)
             return jsonify({"status": "ok"})
-        ssh_run(cluster, f"scancel {job_id}")
+        threading.Thread(
+            target=lambda: ssh_run_with_timeout(cluster, f"scancel {job_id}", timeout_sec=10),
+            daemon=True,
+        ).start()
         return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
@@ -585,7 +588,10 @@ def api_cancel_jobs(cluster):
             if errors:
                 return jsonify({"status": "partial", "cancelled": len(sanitized) - len(errors), "errors": errors})
             return jsonify({"status": "ok", "cancelled": len(sanitized)})
-        ssh_run(cluster, f"scancel {','.join(sanitized)}")
+        threading.Thread(
+            target=lambda: ssh_run_with_timeout(cluster, f"scancel {','.join(sanitized)}", timeout_sec=10),
+            daemon=True,
+        ).start()
         return jsonify({"status": "ok", "cancelled": len(sanitized)})
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})

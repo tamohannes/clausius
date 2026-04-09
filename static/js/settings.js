@@ -487,11 +487,12 @@ async function cancelJob(cluster, jobId) {
   if (!confirm(`Cancel job ${jobId} on ${cluster}?`)) return;
   const t = toastLoading(`Cancelling ${jobId}…`);
   try {
-    const res = await fetch(`/api/cancel/${cluster}/${jobId}`, { method: 'POST' });
+    const res = await fetchWithTimeout(`/api/cancel/${cluster}/${jobId}`, { method: 'POST' }, 8000);
     const d = await res.json();
-    if (d.status === 'ok') { t.done(`Cancelled ${jobId}`); refreshCluster(cluster, true); }
-    else t.done(d.error, 'error');
-  } catch { t.done('Cancel failed', 'error'); }
+    if (d.status === 'ok') { t.done(`Cancelled ${jobId}`); }
+    else { t.done(d.error, 'error'); return; }
+  } catch { t.done('Cancel failed', 'error'); return; }
+  setTimeout(() => refreshCluster(cluster, true), 1500);
 }
 
 async function cancelGroup(cluster, jobIdsJson, groupName) {
@@ -499,16 +500,17 @@ async function cancelGroup(cluster, jobIdsJson, groupName) {
   if (!confirm(`Cancel ${jobIds.length} job${jobIds.length !== 1 ? 's' : ''} in "${groupName}" on ${cluster}?`)) return;
   const t = toastLoading(`Cancelling ${jobIds.length} jobs…`);
   try {
-    const res = await fetch(`/api/cancel_jobs/${cluster}`, {
+    const res = await fetchWithTimeout(`/api/cancel_jobs/${cluster}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ job_ids: jobIds }),
-    });
+    }, 8000);
     const d = await res.json();
-    if (d.status === 'ok') { t.done(`Cancelled ${d.cancelled} jobs in ${groupName}`); refreshCluster(cluster, true); }
-    else if (d.status === 'partial') { t.done(`Cancelled ${d.cancelled} jobs, ${d.errors.length} failed`, 'error'); refreshCluster(cluster, true); }
-    else t.done(d.error, 'error');
-  } catch { t.done('Cancel group failed', 'error'); }
+    if (d.status === 'ok') { t.done(`Cancelled ${d.cancelled} jobs in ${groupName}`); }
+    else if (d.status === 'partial') { t.done(`Cancelled ${d.cancelled} jobs, ${d.errors.length} failed`, 'error'); }
+    else { t.done(d.error, 'error'); return; }
+  } catch { t.done('Cancel group failed', 'error'); return; }
+  setTimeout(() => refreshCluster(cluster, true), 1500);
 }
 
 
