@@ -604,12 +604,12 @@ def get_user_overlay(users=None, accounts=None, clusters=None, force=False):
     return result
 
 
-def get_team_overlay():
+def get_team_overlay(force=False):
     """Get overlay data for the current user and their team members."""
     from .config import DEFAULT_USER
     team_members = _get_team_members()
     all_users = list(set([DEFAULT_USER] + team_members))
-    data = get_user_overlay(users=all_users)
+    data = get_user_overlay(users=all_users, force=force)
     data["current_user"] = DEFAULT_USER
     data["team_members"] = team_members
     data["team_name"] = TEAM_NAME

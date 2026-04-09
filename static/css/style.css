@@ -3233,15 +3233,28 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   border-bottom: 1px solid var(--border);
 }
 .ws-chip {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 16px; border-radius: 8px;
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 6px;
   font-family: var(--mono); font-size: 12px;
   border: 1px solid var(--border);
   background: var(--surface);
   transition: border-color 0.15s;
-  flex-wrap: wrap;
+  position: relative; cursor: default;
 }
 .ws-chip:hover { border-color: var(--accent-bd); }
+.ws-popup {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 0; min-width: 200px;
+  z-index: 50; box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  font-size: 11px;
+}
+.ws-chip:hover .ws-popup { display: block; }
+.ws-pop-row {
+  display: flex; justify-content: space-between; gap: 16px;
+  padding: 3px 12px; color: var(--muted);
+}
+.ws-pop-row span:last-child { font-weight: 600; color: var(--text); }
 .ws-best {
   border-color: var(--green);
   background: var(--green-bg);
@@ -3249,7 +3262,7 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
 .ws-good { border-color: var(--border); }
 .ws-ok { border-color: var(--border); opacity: 0.7; }
 .ws-cluster {
-  font-weight: 700; font-size: 14px; color: var(--text);
+  font-weight: 700; font-size: 13px; color: var(--text);
 }
 .ws-best .ws-cluster { color: var(--green); }
 .ws-gpu {
@@ -3259,8 +3272,8 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   text-transform: uppercase;
 }
 .ws-headroom {
-  font-weight: 700; color: var(--green);
-  font-size: 12px;
+  font-weight: 600; color: var(--green);
+  font-size: 11px;
 }
 .ws-ok .ws-headroom { color: var(--amber); }
 .ws-acct {

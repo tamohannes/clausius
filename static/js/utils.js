@@ -1084,34 +1084,33 @@ function _renderSubmitSummary(clusters) {
 
   return '<div class="ws-strip">' + ranked.map((c, i) => {
     const cls = i === 0 ? 'ws-best' : c.wds >= 50 ? 'ws-good' : 'ws-ok';
-    const acctShort = c.bestAcct ? _shortAcct(c.bestAcct) : '';
-    const teamLabel = c.teamNum ? ` / ${c.teamNum}` : '';
-    const tooltip = `Team free: ${c.freeForTeam} GPUs (using ${c.teamRunning}${teamLabel}), PPP headroom: ${c.pppHeadroom}, FS: ${c.levelFs.toFixed(1)}`;
-
-    const myR = c.myRunning || 0;
-    const myP = c.myPending || 0;
-    const teamR = c.teamRunning || 0;
-    const teamP = c.teamPending || 0;
-
     const wdsCls = c.wds >= 75 ? 'wds-high' : c.wds >= 50 ? 'wds-med' : 'wds-low';
-    return `<div class="ws-chip ${cls}" title="${tooltip}">
+    const acctShort = c.bestAcct ? _shortAcct(c.bestAcct) : '';
+    const cps = _partitionData?.[c.cn];
+    const gpn = cps?.partitions?.[0]?.gpus_per_node || CLUSTERS[c.cn]?.gpus_per_node || 8;
+    const idleGpus = (cps?.idle_nodes || 0) * gpn;
+    const mf = _myFairshareData?.clusters?.[c.cn]?.[c.bestAcct];
+    const myFs = mf ? mf.level_fs.toFixed(1) : '';
+    const myFsCls = mf ? (mf.level_fs >= 1.2 ? 'ws-fs-good' : mf.level_fs >= 0.8 ? 'ws-fs-neutral' : 'ws-fs-low') : '';
+
+    const popRows = [
+      `<div class="ws-pop-row"><span>Free for team</span><span class="${c.freeForTeam > 0 ? 'green' : 'red'}">${c.freeForTeam} GPUs</span></div>`,
+      `<div class="ws-pop-row"><span>Idle GPUs</span><span>${idleGpus}</span></div>`,
+      `<div class="ws-pop-row"><span>PPP headroom</span><span>${c.pppHeadroom}</span></div>`,
+      `<div class="ws-pop-row"><span>PPP FS</span><span>${c.levelFs.toFixed(2)}</span></div>`,
+      myFs ? `<div class="ws-pop-row"><span>Your FS</span><span class="${myFsCls}">${myFs}</span></div>` : '',
+      acctShort ? `<div class="ws-pop-row"><span>Account</span><span>${acctShort}</span></div>` : '',
+      c.teamNum ? `<div class="ws-pop-row"><span>Team alloc</span><span>${c.teamNum}</span></div>` : '',
+      `<div class="ws-pop-row"><span>Team running</span><span>${c.teamRunning || 0}</span></div>`,
+    ].filter(Boolean).join('');
+
+    return `<div class="ws-chip ${cls}">
       <span class="ws-cluster">${c.cn}</span>
       ${c.gpuType ? `<span class="ws-gpu">${c.gpuType}</span>` : ''}
       <span class="wds-badge ${wdsCls}">${c.wds}</span>
       <span class="ws-headroom">${c.freeForTeam} free</span>
-      ${(() => {
-        const cps = _partitionData?.[c.cn];
-        if (!cps) return '';
-        const gpn = cps.partitions?.[0]?.gpus_per_node || CLUSTERS[c.cn]?.gpus_per_node || 8;
-        return `<span class="ws-idle">${(cps.idle_nodes || 0) * gpn} free</span>`;
-      })()}
-      ${acctShort ? `<span class="ws-acct">via ${acctShort}</span>` : ''}
-      ${(() => {
-        const mf = _myFairshareData?.clusters?.[c.cn]?.[c.bestAcct];
-        if (!mf) return '';
-        const cls = mf.level_fs >= 1.2 ? 'ws-fs-good' : mf.level_fs >= 0.8 ? 'ws-fs-neutral' : 'ws-fs-low';
-        return `<span class="ws-my-fs ${cls}">you ${mf.level_fs.toFixed(1)}</span>`;
-      })()}
+      ${myFs ? `<span class="ws-my-fs ${myFsCls}">you ${myFs}</span>` : ''}
+      <div class="ws-popup">${popRows}</div>
     </div>`;
   }).join('') + '</div>';
 }
@@ -1328,9 +1327,9 @@ function _renderPppAllocations(data) {
           if (m !== currentUser) teamOthersTotal += (acctUsers[m] || 0);
         }
       }
-      if (!teamOthersTotal && hasJobSplit) {
+      if (!teamOthersTotal && hasJobSplit && teamMembers.length) {
         for (const j of acctJobs) {
-          if (j.user && j.user !== currentUser && j.state === 'RUNNING') teamOthersTotal += (j.gpus || 0);
+          if (teamMembers.includes(j.user) && j.user !== currentUser && j.state === 'RUNNING') teamOthersTotal += (j.gpus || 0);
         }
       }
       for (const j of acctJobs) {
@@ -1366,15 +1365,15 @@ function _renderPppAllocations(data) {
           const g = j.gpus || 0;
           if (j.user === currentUser) {
             if (j.state === 'RUNNING') myRunning += g; else myPending += g;
-          } else if (!teamMembers.length || teamMembers.includes(j.user)) {
+          } else if (teamMembers.length && teamMembers.includes(j.user)) {
             if (j.state === 'RUNNING') teamRunGpus += g; else teamPendGpus += g;
           }
         }
         const myRunGpus = Math.min(myRunning, myTotal);
         const myPendGpus = Math.min(myPending, myTotal * 0.3);
 
-        const teamRunW = teamOthersTotal > 0 ? Math.min(teamRunGpus, teamOthersTotal) : teamRunGpus;
-        const teamPendW = teamOthersTotal > 0 ? Math.min(teamPendGpus, teamOthersTotal * 0.3) : teamPendGpus;
+        const teamRunW = Math.min(teamRunGpus, teamOthersTotal);
+        const teamPendW = Math.min(teamPendGpus, teamOthersTotal * 0.3);
 
         const showProjects = document.getElementById('ppp-project-toggle')?.checked && _projectColors;
         if (showMe && showProjects) {
