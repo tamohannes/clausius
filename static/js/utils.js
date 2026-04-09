@@ -1328,6 +1328,11 @@ function _renderPppAllocations(data) {
           if (m !== currentUser) teamOthersTotal += (acctUsers[m] || 0);
         }
       }
+      if (!teamOthersTotal && hasJobSplit) {
+        for (const j of acctJobs) {
+          if (j.user && j.user !== currentUser && j.state === 'RUNNING') teamOthersTotal += (j.gpus || 0);
+        }
+      }
       for (const j of acctJobs) {
         if (j.user === currentUser) myTotalSqueue += (j.gpus || 0);
       }
@@ -1361,15 +1366,15 @@ function _renderPppAllocations(data) {
           const g = j.gpus || 0;
           if (j.user === currentUser) {
             if (j.state === 'RUNNING') myRunning += g; else myPending += g;
-          } else if (teamMembers.includes(j.user)) {
+          } else if (!teamMembers.length || teamMembers.includes(j.user)) {
             if (j.state === 'RUNNING') teamRunGpus += g; else teamPendGpus += g;
           }
         }
         const myRunGpus = Math.min(myRunning, myTotal);
         const myPendGpus = Math.min(myPending, myTotal * 0.3);
 
-        const teamRunW = Math.min(teamRunGpus, teamOthersTotal);
-        const teamPendW = Math.min(teamPendGpus, teamOthersTotal * 0.3);
+        const teamRunW = teamOthersTotal > 0 ? Math.min(teamRunGpus, teamOthersTotal) : teamRunGpus;
+        const teamPendW = teamOthersTotal > 0 ? Math.min(teamPendGpus, teamOthersTotal * 0.3) : teamPendGpus;
 
         const showProjects = document.getElementById('ppp-project-toggle')?.checked && _projectColors;
         if (showMe && showProjects) {
