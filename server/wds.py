@@ -263,6 +263,7 @@ def get_wait_calibration():
 def _compute_wait_calibration():
     import bisect
     from collections import defaultdict
+    from .db import get_db
 
     con = get_db()
 
