@@ -636,9 +636,32 @@ def extract_custom_metrics(cluster_name, job_id):
 
     safe_dir = log_dir.rstrip('/').replace("'", "'\\''")
     safe_glob = file_glob.replace("'", "'\\''")
-    search_path = f"{safe_dir}/{safe_glob}"
 
-    script_parts = [f"#!/bin/sh", f"SEARCHPATH='{search_path}'"]
+    script_parts = [
+        "#!/bin/sh",
+        f"LOGDIR='{safe_dir}'",
+        f"JOB_GLOB='{safe_glob}'",
+        "FILES_LIST=\"${TMPDIR:-/tmp}/clausius-metrics-$$.txt\"",
+        "collect_metric_files() {",
+        "  found=0",
+        "  for f in $JOB_GLOB; do",
+        "    [ -f \"$f\" ] || continue",
+        "    printf '%s\\n' \"$f\"",
+        "    found=1",
+        "  done",
+        "  if [ \"$found\" -eq 1 ]; then",
+        "    return 0",
+        "  fi",
+        "  for pat in *.log *.out *.err *.txt *.json *.jsonl *.jsonl-async *.md *; do",
+        "    for f in $pat; do",
+        "      [ -f \"$f\" ] || continue",
+        "      printf '%s\\n' \"$f\"",
+        "    done",
+        "  done",
+        "}",
+        "cd \"$LOGDIR\" 2>/dev/null || exit 0",
+        "collect_metric_files | awk '!seen[$0]++' > \"$FILES_LIST\"",
+    ]
     for ext in validated_extractors:
         regex = ext["regex"]
         if not regex:
@@ -646,8 +669,9 @@ def extract_custom_metrics(cluster_name, job_id):
         safe_regex = regex.replace("'", "'\\''")
         script_parts.append(
             f"echo '===METRIC_{ext['index']}===';"
-            f" grep -oP '{safe_regex}' $SEARCHPATH 2>/dev/null || true"
+            f" while IFS= read -r f; do grep -oP '{safe_regex}' \"$f\" 2>/dev/null || true; done < \"$FILES_LIST\""
         )
+    script_parts.append("rm -f \"$FILES_LIST\"")
     script = "\n".join(script_parts)
 
     try:
