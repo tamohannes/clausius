@@ -20,6 +20,10 @@ Concurrency safety:
   thread starvation when multiple threads reconnect simultaneously.
 - A global semaphore caps concurrent SSH operations so request
   threads always remain available for cached/non-SSH responses.
+- All paramiko I/O (channel open, reads, writes) is wrapped in a
+  daemon thread with Thread.join(timeout) to enforce hard wall-clock
+  deadlines — paramiko's own timeout parameters are unreliable when
+  the transport's internal thread is blocked.
 """
 
 import atexit
@@ -54,6 +58,37 @@ _ssh_semaphore = threading.Semaphore(16)
 # Channel-open timeout is capped independently of command timeout.
 # If the server can't open a channel in this window, the transport is broken.
 _CHAN_OPEN_TIMEOUT = 5
+
+
+# ── Thread-based hard timeout wrapper ────────────────────────────────────────
+
+def _run_with_deadline(fn, timeout_sec):
+    """Run *fn* in a daemon thread, returning its result or raising on timeout.
+
+    Paramiko's built-in timeout parameters are unreliable: they depend on
+    internal Event.wait() calls that can miss the deadline when the
+    transport thread is blocked on socket I/O.  This wrapper enforces a
+    true wall-clock deadline via Thread.join(timeout).
+    """
+    result = [None]
+    exc = [None]
+
+    def _worker():
+        try:
+            result[0] = fn()
+        except Exception as e:
+            exc[0] = e
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=timeout_sec)
+    if t.is_alive():
+        raise socket.timeout(
+            f"SSH operation timed out after {timeout_sec}s (thread still running)"
+        )
+    if exc[0]:
+        raise exc[0]
+    return result[0]
 
 
 # ── Client creation ──────────────────────────────────────────────────────────
@@ -252,6 +287,7 @@ def ssh_pool_gc_loop():
         ]
         for pool, lock_fn in pools_and_lock_fns:
             stale = []
+            to_probe = []  # (cluster, transport) — probe outside the lock
             with _ssh_pool_lock:
                 for cluster, rec in list(pool.items()):
                     age = now - rec.get("last_used", 0)
@@ -266,8 +302,13 @@ def ssh_pool_gc_loop():
                         tr = rec["client"].get_transport()
                         if not tr or not tr.is_active():
                             stale.append(cluster)
+                        else:
+                            to_probe.append((cluster, tr))
                     except Exception:
                         stale.append(cluster)
+            for cluster, tr in to_probe:
+                if not _transport_is_healthy(tr):
+                    stale.append(cluster)
             for cluster in stale:
                 _close_pool_client(pool, lock_fn(cluster), cluster)
         time.sleep(30)
@@ -314,6 +355,25 @@ def enable_standalone_ssh():
 
 # ── Core execution ───────────────────────────────────────────────────────────
 
+def _transport_is_healthy(tr):
+    """Quick probe: open and immediately close a channel.
+
+    Returns False if the transport is "active" at the paramiko level but
+    the SSH server refuses new channels (the state that causes hangs).
+    Uses _run_with_deadline so a broken transport can't block the caller.
+    """
+    if not tr or not tr.is_active():
+        return False
+    try:
+        def _probe():
+            chan = tr.open_session(timeout=_CHAN_OPEN_TIMEOUT)
+            chan.close()
+        _run_with_deadline(_probe, _CHAN_OPEN_TIMEOUT)
+        return True
+    except Exception:
+        return False
+
+
 def _get_transport(pool, lock, cluster_name, force_new=False, host_override=None):
     """Return an active paramiko Transport for *cluster_name*.
 
@@ -330,28 +390,31 @@ def _get_transport(pool, lock, cluster_name, force_new=False, host_override=None
 def _exec_on_transport(transport, command, timeout_sec):
     """Open a channel on *transport*, run *command*, return (stdout, stderr).
 
-    Channel open uses a short fixed timeout (_CHAN_OPEN_TIMEOUT) — if the
-    server can't open a channel quickly, the transport is stale and the
-    caller should reconnect.
+    The entire operation (channel open + exec + read) runs inside
+    _run_with_deadline so a broken transport can never block the calling
+    thread past the wall-clock timeout.
     """
-    chan_timeout = min(_CHAN_OPEN_TIMEOUT, timeout_sec)
-    chan = transport.open_session(timeout=chan_timeout)
-    try:
-        chan.settimeout(timeout_sec)
-        chan.exec_command("bash")
-        chan.sendall((command + "\nexit\n").encode())
-        chan.shutdown_write()
-
-        stdout = chan.makefile("rb", -1)
-        stderr = chan.makefile_stderr("rb", -1)
-        out = stdout.read().decode().strip()
-        err = stderr.read().decode().strip()
-    finally:
+    def _do():
+        chan_timeout = min(_CHAN_OPEN_TIMEOUT, timeout_sec)
+        chan = transport.open_session(timeout=chan_timeout)
         try:
-            chan.close()
-        except Exception:
-            pass
-    return out, err
+            chan.settimeout(timeout_sec)
+            chan.exec_command("bash")
+            chan.sendall((command + "\nexit\n").encode())
+            chan.shutdown_write()
+
+            stdout = chan.makefile("rb", -1)
+            stderr = chan.makefile_stderr("rb", -1)
+            out = stdout.read().decode(errors="replace").strip()
+            err = stderr.read().decode(errors="replace").strip()
+        finally:
+            try:
+                chan.close()
+            except Exception:
+                pass
+        return out, err
+
+    return _run_with_deadline(_do, timeout_sec)
 
 
 def _ssh_exec_data(cluster_name, command, timeout_sec):

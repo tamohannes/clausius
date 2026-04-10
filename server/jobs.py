@@ -680,24 +680,33 @@ def _is_cache_fresh(cluster_name):
     return (time.monotonic() - ts) < CACHE_FRESH_SEC
 
 
-_poll_inflight = set()
+_poll_inflight = {}            # cluster -> start timestamp
 _poll_inflight_lock = threading.Lock()
+_POLL_TIMEOUT_SEC = 30
 
 
 def _start_poll(name):
-    """Start a poll thread for *name* if one isn't already running."""
+    """Start a poll thread for *name* if one isn't already running.
+
+    A stuck poll is automatically evicted after _POLL_TIMEOUT_SEC so a
+    broken cluster can never permanently block its own refresh cycle.
+    """
+    now = time.monotonic()
     with _poll_inflight_lock:
-        if name in _poll_inflight:
-            return
-        _poll_inflight.add(name)
-    _last_polled[name] = time.monotonic()
+        started_at = _poll_inflight.get(name)
+        if started_at is not None:
+            if now - started_at < _POLL_TIMEOUT_SEC:
+                return
+            _poll_inflight.pop(name, None)
+        _poll_inflight[name] = now
+    _last_polled[name] = now
 
     def _run():
         try:
             poll_cluster(name)
         finally:
             with _poll_inflight_lock:
-                _poll_inflight.discard(name)
+                _poll_inflight.pop(name, None)
 
     threading.Thread(target=_run, daemon=True).start()
 
