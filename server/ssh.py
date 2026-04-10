@@ -351,6 +351,9 @@ def ssh_pool_gc_loop():
             to_probe = []  # (cluster, transport) — probe outside the lock
             with _ssh_pool_lock:
                 for cluster, rec in list(pool.items()):
+                    if _cb_is_open(cluster):
+                        stale.append(cluster)
+                        continue
                     age = now - rec.get("last_used", 0)
                     if age > SSH_IDLE_TTL_SEC:
                         stale.append(cluster)
@@ -372,7 +375,33 @@ def ssh_pool_gc_loop():
                     stale.append(cluster)
             for cluster in stale:
                 _close_pool_client(pool, lock_fn(cluster), cluster)
+
+        _watchdog_reset_active_requests()
         time.sleep(30)
+
+
+def _watchdog_reset_active_requests():
+    """Correct the active request counter if it has drifted.
+
+    Gunicorn's gthread worker can silently kill threads that exceed the
+    45s timeout.  If that happens mid-request, the teardown hook never
+    runs and _active_requests stays inflated permanently.  This watchdog
+    resets the counter to a sane value when no requests should be active.
+    """
+    try:
+        from .routes import _active_requests, _active_lock, _MAX_ACTIVE
+        with _active_lock:
+            current = _active_requests
+        if current > _MAX_ACTIVE:
+            from . import routes
+            with routes._active_lock:
+                log.warning(
+                    "watchdog: _active_requests=%d exceeds max=%d, resetting to 0",
+                    routes._active_requests, _MAX_ACTIVE,
+                )
+                routes._active_requests = 0
+    except Exception:
+        pass
 
 
 # ── Public API ───────────────────────────────────────────────────────────────
@@ -526,7 +555,7 @@ def _ssh_exec(cluster_name, command, timeout_sec):
         pool = _ssh_pool
         lock = _get_cluster_lock(cluster_name)
 
-    acquired = _ssh_semaphore.acquire(timeout=timeout_sec)
+    acquired = _ssh_semaphore.acquire(timeout=min(timeout_sec, 3))
     if not acquired:
         raise paramiko.SSHException(
             f"SSH to {cluster_name}: too many concurrent operations (semaphore timeout)"

@@ -336,6 +336,37 @@ class TestConcurrency:
 
 
 # ---------------------------------------------------------------------------
+# Watchdog
+# ---------------------------------------------------------------------------
+
+@pytest.mark.integration
+class TestWatchdog:
+    """Verify the self-healing watchdog resets drifted counters."""
+
+    def test_watchdog_resets_inflated_counter(self):
+        from server import routes
+        from server.ssh import _watchdog_reset_active_requests
+        with routes._active_lock:
+            routes._active_requests = routes._MAX_ACTIVE + 50
+
+        _watchdog_reset_active_requests()
+
+        with routes._active_lock:
+            assert routes._active_requests == 0
+
+    def test_watchdog_leaves_normal_counter_alone(self):
+        from server import routes
+        from server.ssh import _watchdog_reset_active_requests
+        with routes._active_lock:
+            routes._active_requests = 5
+
+        _watchdog_reset_active_requests()
+
+        with routes._active_lock:
+            assert routes._active_requests == 5
+
+
+# ---------------------------------------------------------------------------
 # Global error handler
 # ---------------------------------------------------------------------------
 
