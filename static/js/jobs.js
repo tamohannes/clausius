@@ -31,6 +31,11 @@ function _renderErrorBanner() {
 }
 
 
+function _persistAllData() {
+  try { sessionStorage.setItem('clausius.allData', JSON.stringify(allData)); } catch (_) {}
+}
+
+
 // ── App tabs ─────────────────────────────────────────────────────────────────
 const _tabIcons = {
   live:    '⚡', history: '⏱',
@@ -872,6 +877,22 @@ async function fetchAll() {
 }
 async function _doFetchAll() {
   const grid = document.getElementById('grid');
+
+  // 0) Restore locally cached data instantly so the UI is never empty.
+  if (!Object.keys(allData).length) {
+    try {
+      const stored = sessionStorage.getItem('clausius.allData');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Object.values(parsed).some(d => d.updated)) {
+          allData = parsed;
+          _fillMissing();
+          _renderAll();
+        }
+      }
+    } catch (_) {}
+  }
+
   if (!grid.children.length) _showLoadingSkeleton();
 
   fetchClusterUtilization().then(() => {
@@ -886,21 +907,24 @@ async function _doFetchAll() {
     });
   }
 
-  // 1) Always render cached data immediately (even if stale — better than empty).
+  // 1) Fetch fresh data from server (updates cache on success).
   try {
     const res = await fetchWithTimeout('/api/jobs');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const cached = await res.json();
-    const hasData = Object.values(cached).some(d => d.updated);
+    const fresh = await res.json();
+    const hasData = Object.values(fresh).some(d => d.updated);
     if (hasData) {
-      allData = cached;
+      allData = fresh;
       _fillMissing();
       _renderAll();
       _clearErrorBannerKey('jobs');
+      _persistAllData();
     }
   } catch (e) {
     console.warn('Initial job fetch failed, will retry per-cluster', e);
-    _setErrorBanner('jobs', `Server unreachable — retrying (${e.message})`);
+    if (!Object.keys(allData).length) {
+      _setErrorBanner('jobs', `Server unreachable — retrying (${e.message})`);
+    }
   }
 
   if (!Object.keys(allData).length && !grid.children.length) _showLoadingSkeleton();
@@ -936,6 +960,7 @@ async function _forceRefreshAll() {
   );
   await Promise.allSettled(promises);
   grid.classList.remove('grid-loading');
+  _persistAllData();
   _saveProgressCache();
   prefetchAndUpdateProgress(allData);
 }
@@ -961,6 +986,7 @@ async function _refreshClusters(names) {
       .catch(err => { failed.push(name); console.warn('Cluster refresh failed:', name, err); })
   );
   await Promise.allSettled(promises);
+  _persistAllData();
   if (failed.length) {
     const s = failed.length === 1
       ? `${failed[0]} unreachable`
