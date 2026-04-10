@@ -335,6 +335,79 @@ def _propagate_to_run(cluster, job_id, setter_fn, value):
     return count
 
 
+def _normalize_metrics_config(cfg):
+    if cfg is None:
+        return {}, None
+    if not isinstance(cfg, dict):
+        return None, "Metrics config must be an object"
+
+    normalized = dict(cfg)
+
+    if "file_glob" in normalized:
+        file_glob = normalized["file_glob"]
+        if file_glob is None:
+            normalized["file_glob"] = ""
+        elif not isinstance(file_glob, str):
+            return None, "Metrics config file_glob must be a string"
+
+    extractors = normalized.get("extractors", [])
+    if extractors is None:
+        extractors = []
+    if not isinstance(extractors, list):
+        return None, "Metrics config extractors must be a list"
+
+    normalized_extractors = []
+    for idx, ext in enumerate(extractors, start=1):
+        if not isinstance(ext, dict):
+            return None, f"Extractor {idx} must be an object"
+
+        name = ext.get("name", "")
+        regex = ext.get("regex", "")
+        mode = ext.get("mode", "last")
+        group = ext.get("group", 1)
+
+        if name is None:
+            name = ""
+        if regex is None:
+            regex = ""
+        if not isinstance(name, str):
+            return None, f"Extractor {idx} name must be a string"
+        if not isinstance(regex, str):
+            return None, f"Extractor {idx} regex must be a string"
+        try:
+            group = int(group)
+        except (TypeError, ValueError):
+            return None, f"Extractor {idx} group must be an integer"
+        if group < 1:
+            return None, f"Extractor {idx} group must be >= 1"
+        if regex:
+            try:
+                re.compile(regex)
+            except re.error as e:
+                return None, f"Invalid regex for extractor {idx}: {e}"
+
+        normalized_extractors.append({
+            "name": name,
+            "regex": regex,
+            "group": group,
+            "mode": mode or "last",
+        })
+
+    if "extractors" in normalized or normalized_extractors:
+        normalized["extractors"] = normalized_extractors
+    return normalized, None
+
+
+def _load_metrics_config(raw):
+    if not raw:
+        return {}, None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "Invalid metrics config JSON"
+    return _normalize_metrics_config(parsed)
+
+
 @api.route("/api/custom_log_dir/<cluster>/<job_id>", methods=["GET", "POST"])
 def api_custom_log_dir(cluster, job_id):
     if cluster not in CLUSTERS:
@@ -355,10 +428,14 @@ def api_custom_metrics_config(cluster, job_id):
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     if request.method == "GET":
         raw = get_custom_metrics_config(cluster, job_id)
-        cfg = json.loads(raw) if raw else {}
+        cfg, error = _load_metrics_config(raw)
+        if error:
+            return jsonify({"status": "error", "error": error, "config": {}})
         return jsonify({"status": "ok", "config": cfg})
     payload = request.get_json(silent=True) or {}
-    cfg = payload.get("config", {})
+    cfg, error = _normalize_metrics_config(payload.get("config", {}))
+    if error:
+        return jsonify({"status": "error", "error": error}), 400
     cfg_str = json.dumps(cfg) if cfg else ""
     set_custom_metrics_config(cluster, job_id, cfg_str)
     siblings = _propagate_to_run(cluster, job_id, set_custom_metrics_config, cfg_str)
@@ -376,6 +453,10 @@ def api_custom_metrics_apply_to_run(cluster, job_id):
     src_cfg = get_custom_metrics_config(cluster, job_id)
     if not src_cfg:
         return jsonify({"status": "error", "error": "No metrics config on this job"}), 400
+    cfg, error = _load_metrics_config(src_cfg)
+    if error:
+        return jsonify({"status": "error", "error": error}), 400
+    src_cfg = json.dumps(cfg) if cfg else ""
     jobs = get_jobs_in_run(cluster, run_id)
     count = 0
     for j in jobs:
@@ -393,6 +474,8 @@ def api_copy_metrics_config(cluster, job_id):
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     payload = request.get_json(silent=True) or {}
     src_cluster = payload.get("src_cluster", cluster)
+    if src_cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown source cluster"}), 400
     src_job_id = str(payload.get("src_job_id", "")).strip()
     if not src_job_id:
         return jsonify({"status": "error", "error": "No src_job_id provided"}), 400
@@ -418,7 +501,12 @@ def api_copy_metrics_config(cluster, job_id):
         return jsonify({"status": "error", "error": f"No custom config found on job {src_cluster}/{src_job_id} or its run"}), 400
 
     copied = []
+    cfg = {}
     if src_metrics:
+        cfg, error = _load_metrics_config(src_metrics)
+        if error:
+            return jsonify({"status": "error", "error": f"Invalid metrics config on source job {src_cluster}/{src_job_id}: {error}"}), 400
+        src_metrics = json.dumps(cfg) if cfg else ""
         set_custom_metrics_config(cluster, job_id, src_metrics)
         _propagate_to_run(cluster, job_id, set_custom_metrics_config, src_metrics)
         copied.append("metrics_config")
@@ -428,7 +516,6 @@ def api_copy_metrics_config(cluster, job_id):
         _propagate_to_run(cluster, job_id, set_custom_log_dir, src_log_dir)
         copied.append("custom_log_dir")
 
-    cfg = json.loads(src_metrics) if src_metrics else {}
     return jsonify({
         "status": "ok",
         "copied": copied,

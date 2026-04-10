@@ -173,9 +173,13 @@ async function copyMetricsFrom() {
       return;
     }
     if (d.custom_log_dir) _syncCustomLogInput(d.custom_log_dir);
-    if (d.config && d.config.extractors) {
-      _metricsConfig = d.config;
-      document.getElementById('metrics-file-glob').value = d.config.file_glob || '*';
+    if (d.config) {
+      _metricsConfig = {
+        ...d.config,
+        file_glob: d.config.file_glob || '*{job_id}*',
+        extractors: Array.isArray(d.config.extractors) ? d.config.extractors : [],
+      };
+      document.getElementById('metrics-file-glob').value = _metricsConfig.file_glob;
       _renderMetricsConfigRows();
     }
     const parts = d.copied || [];
@@ -190,8 +194,12 @@ async function _loadMetricsConfig() {
   try {
     const res = await fetch(`/api/custom_metrics_config/${_exCluster}/${_exJobId}`);
     const d = await res.json();
-    if (d.status === 'ok' && d.config && d.config.extractors) {
-      _metricsConfig = d.config;
+    if (d.status === 'ok' && d.config) {
+      _metricsConfig = {
+        ...d.config,
+        file_glob: d.config.file_glob || '*{job_id}*',
+        extractors: Array.isArray(d.config.extractors) ? d.config.extractors : [],
+      };
     } else {
       _metricsConfig = { file_glob: '*{job_id}*', extractors: [] };
     }

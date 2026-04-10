@@ -579,23 +579,73 @@ def extract_custom_metrics(cluster_name, job_id):
         return {"status": "error", "error": "No custom_log_dir set for this job"}
 
     extractors = cfg.get("extractors", [])
+    if extractors is None:
+        extractors = []
+    if not isinstance(extractors, list):
+        return {"status": "error", "error": "Invalid metrics config: extractors must be a list"}
     if not extractors:
         return {"status": "ok", "metrics": []}
 
     file_glob = cfg.get("file_glob", "*{job_id}*")
+    if file_glob is None:
+        file_glob = "*{job_id}*"
+    if not isinstance(file_glob, str):
+        return {"status": "error", "error": "Invalid metrics config: file_glob must be a string"}
     file_glob = file_glob.replace("{job_id}", str(job_id))
+
+    validated_extractors = []
+    for i, ext in enumerate(extractors):
+        if not isinstance(ext, dict):
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} must be an object"}
+
+        name = ext.get("name", f"metric_{i}")
+        regex = ext.get("regex", "")
+        mode = ext.get("mode", "last")
+        group = ext.get("group", 1)
+
+        if name is None:
+            name = f"metric_{i}"
+        if regex is None:
+            regex = ""
+        if not isinstance(name, str):
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} name must be a string"}
+        if not isinstance(regex, str):
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} regex must be a string"}
+        try:
+            group = int(group)
+        except (TypeError, ValueError):
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} group must be an integer"}
+        if group < 1:
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} group must be >= 1"}
+
+        compiled = None
+        if regex:
+            try:
+                compiled = re.compile(regex)
+            except re.error as e:
+                return {"status": "error", "error": f"Invalid regex for metric '{name}': {e}"}
+
+        validated_extractors.append({
+            "index": i,
+            "name": name,
+            "regex": regex,
+            "group": group,
+            "mode": mode or "last",
+            "compiled": compiled,
+        })
+
     safe_dir = log_dir.rstrip('/').replace("'", "'\\''")
     safe_glob = file_glob.replace("'", "'\\''")
     search_path = f"{safe_dir}/{safe_glob}"
 
     script_parts = [f"#!/bin/sh", f"SEARCHPATH='{search_path}'"]
-    for i, ext in enumerate(extractors):
-        regex = ext.get("regex", "")
+    for ext in validated_extractors:
+        regex = ext["regex"]
         if not regex:
             continue
         safe_regex = regex.replace("'", "'\\''")
         script_parts.append(
-            f"echo '===METRIC_{i}===';"
+            f"echo '===METRIC_{ext['index']}===';"
             f" grep -oP '{safe_regex}' $SEARCHPATH 2>/dev/null || true"
         )
     script = "\n".join(script_parts)
@@ -612,18 +662,18 @@ def extract_custom_metrics(cluster_name, job_id):
     for idx in range(1, len(sections) - 1, 2):
         section_map[int(sections[idx])] = sections[idx + 1]
 
-    for i, ext in enumerate(extractors):
-        name = ext.get("name", f"metric_{i}")
-        group = ext.get("group", 1)
-        mode = ext.get("mode", "last")
-        regex = ext.get("regex", "")
-        raw_text = section_map.get(i, "")
+    for ext in validated_extractors:
+        name = ext["name"]
+        group = ext["group"]
+        mode = ext["mode"]
+        compiled = ext["compiled"]
+        raw_text = section_map.get(ext["index"], "")
 
         values = []
         for line in raw_text.strip().splitlines():
             if not line.strip():
                 continue
-            m = re.search(regex, line)
+            m = compiled.search(line) if compiled else None
             if m:
                 try:
                     values.append(m.group(group))
