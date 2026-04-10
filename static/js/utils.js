@@ -767,12 +767,15 @@ async function fetchClusterUtilization(force) {
   _clusterUtilFetching = true;
   try {
     const res = await fetchWithTimeout('/api/cluster_utilization');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.status === 'ok') {
       _clusterUtil = data;
       _clusterUtilLastFetched = Date.now();
     }
-  } catch (_) {}
+  } catch (e) {
+    console.warn('Cluster utilization fetch failed:', e);
+  }
   _clusterUtilFetching = false;
 }
 
@@ -782,12 +785,17 @@ async function fetchPartitions(force) {
   _partitionFetching = true;
   try {
     const res = await fetchWithTimeout('/api/partition_summary');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     if (data.status === 'ok') {
       _partitionData = data.clusters;
       _partitionLastFetched = Date.now();
+      if (typeof _clearErrorBannerKey === 'function') _clearErrorBannerKey('partitions');
     }
-  } catch (_) {}
+  } catch (e) {
+    console.warn('Partition fetch failed:', e);
+    if (typeof _setErrorBanner === 'function') _setErrorBanner('partitions', 'Partition data unavailable');
+  }
   _partitionFetching = false;
 }
 
@@ -914,8 +922,6 @@ async function _doRefreshPppAllocations(force) {
 
   _showComputeLoadBar(true);
   try {
-    _myFairshareData = null;
-    _teamJobsData = null;
     const q = force ? '?force=1' : '';
     const results = await Promise.allSettled([
       fetchWithTimeout('/api/aihub/allocations' + q, {}, 20000),
@@ -1212,9 +1218,29 @@ function _renderPppAllocations(data) {
           const hasTeamQuota = teamAlloc === 'any' || (teamNum && teamNum > 0);
 
           const tjCluster = _teamJobsData?.clusters?.[cn];
-          const tjJobs = tjCluster?.jobs || [];
+          let tjJobs = tjCluster?.jobs || [];
           const tjSummary = tjCluster?.summary || {};
           const currentUser = USERNAME;
+
+          if (!tjJobs.length && typeof allData !== 'undefined' && allData[cn]) {
+            const cJobs = allData[cn].jobs || [];
+            const live = cJobs.filter(j => !j._pinned);
+            const src = live.length > 0 ? live : cJobs;
+            tjJobs = src.filter(j => {
+              const s = (j.state || '').toUpperCase();
+              return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING';
+            }).map(j => {
+              const gm = (j.gres || '').match(/gpu[^:]*:(?:[a-zA-Z]\w*:)?(\d+)/);
+              const gpn = gm ? parseInt(gm[1], 10) : 8;
+              return {
+                user: currentUser,
+                account: j.account || '',
+                job_name: j.name || '',
+                state: (j.state || '').toUpperCase(),
+                gpus: (parseInt(j.nodes, 10) || 1) * gpn,
+              };
+            });
+          }
 
           const acctSet = new Set();
           for (const j of tjJobs) { if (j.account) acctSet.add(j.account); }
@@ -1387,8 +1413,10 @@ function _renderPppAllocations(data) {
       }
       if (typeof allData !== 'undefined' && allData[cn]) {
         let liveGpus = 0;
-        const liveJobs = (allData[cn].jobs || []).filter(j => !j._pinned);
-        for (const j of liveJobs) {
+        const cJobs = allData[cn].jobs || [];
+        const liveJobs = cJobs.filter(j => !j._pinned);
+        const fallbackJobs = liveJobs.length > 0 ? liveJobs : cJobs;
+        for (const j of fallbackJobs) {
           const s = (j.state || '').toUpperCase();
           if (s !== 'RUNNING' && s !== 'COMPLETING') continue;
           const ja = j.account || '';

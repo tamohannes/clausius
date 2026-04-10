@@ -20,13 +20,21 @@ class TestClusterNameMapping:
     def test_forward_mapping(self):
         assert CLUSTER_NAME_MAP["eos"] == "eos"
         assert CLUSTER_NAME_MAP["dfw"] == "cw-dfw-cs-001"
+        assert CLUSTER_NAME_MAP["aws-dfw"] == "aws-dfw-cs-001"
         assert CLUSTER_NAME_MAP["hsg"] == "oci-hsg-cs-001"
 
     @pytest.mark.unit
     def test_reverse_mapping(self):
         assert CLUSTER_NAME_REV["eos"] == "eos"
         assert CLUSTER_NAME_REV["cw-dfw-cs-001"] == "dfw"
+        assert CLUSTER_NAME_REV["aws-dfw-cs-001"] == "aws-dfw"
         assert CLUSTER_NAME_REV["oci-hsg-cs-001"] == "hsg"
+
+    @pytest.mark.unit
+    def test_dfw_and_aws_dfw_are_distinct(self):
+        assert CLUSTER_NAME_MAP["dfw"] != CLUSTER_NAME_MAP["aws-dfw"]
+        assert CLUSTER_NAME_REV["cw-dfw-cs-001"] == "dfw"
+        assert CLUSTER_NAME_REV["aws-dfw-cs-001"] == "aws-dfw"
 
     @pytest.mark.unit
     def test_friendly_cluster_known(self):

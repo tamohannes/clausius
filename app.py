@@ -4,13 +4,60 @@ Run standalone:  python app.py
 Run production:  gunicorn -c gunicorn.conf.py app:app
 """
 
+import logging
+import logging.config
+import os
 import threading
 import time
 
 from flask import Flask
 
-from server.config import APP_PORT
+from server.config import APP_PORT, PROJECT_ROOT
 from server.routes import api
+
+
+def _configure_logging():
+    log_dir = os.path.join(PROJECT_ROOT, "data")
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "clausius.log")
+    logging.config.dictConfig({
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "standard": {
+                "format": "%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+                "datefmt": "%Y-%m-%d %H:%M:%S",
+            },
+        },
+        "handlers": {
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "filename": log_path,
+                "maxBytes": 5 * 1024 * 1024,
+                "backupCount": 3,
+                "formatter": "standard",
+                "encoding": "utf-8",
+            },
+            "stderr": {
+                "class": "logging.StreamHandler",
+                "formatter": "standard",
+            },
+        },
+        "loggers": {
+            "server": {
+                "level": "INFO",
+                "handlers": ["file", "stderr"],
+                "propagate": False,
+            },
+        },
+        "root": {
+            "level": "WARNING",
+            "handlers": ["file", "stderr"],
+        },
+    })
+
+
+_configure_logging()
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024

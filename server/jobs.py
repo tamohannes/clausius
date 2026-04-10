@@ -348,7 +348,8 @@ def get_job_stats_cached(cluster, job_id, force=False):
         if cached is not None and not cached.get("_partial"):
             return cached
     value = get_job_stats(cluster, str(job_id))
-    _cache_set(_stats_cache, key, value)
+    if value.get("status") == "ok":
+        _cache_set(_stats_cache, key, value)
     return value
 
 
@@ -742,7 +743,19 @@ def prune_job_sets():
 
 def poll_cluster(name):
     data = fetch_cluster_data(name)
+
+    if data["status"] == "error":
+        with _cache_lock:
+            prev = _cache.get(name, {})
+            if prev.get("jobs"):
+                prev["last_error"] = data["error"]
+                prev["updated"] = data["updated"]
+            else:
+                _cache[name] = data
+        return
+
     _enrich_missing_gres(name, data.get("jobs", []))
+    data.pop("last_error", None)
     current_ids = {j["jobid"] for j in data.get("jobs", [])}
 
     with _cache_lock:
@@ -1153,11 +1166,14 @@ def schedule_prefetch(cluster, job_id):
     t.start()
 
 
+_LOG_ERROR_PREFIXES = ("Could not read log:", "File not found on cluster:", "Invalid local process")
+
 def _extract_progress_with_source(cluster, job_id, files):
     """Try files in order, return (pct, label) from the first file with progress."""
     for f in files:
         content = fetch_log_tail(cluster, f["path"], lines=220)
-        _cache_set(_log_content_cache, (cluster, job_id, f["path"]), content)
+        if not any(content.startswith(p) for p in _LOG_ERROR_PREFIXES):
+            _cache_set(_log_content_cache, (cluster, job_id, f["path"]), content)
         pct = extract_progress(content)
         crash = detect_crash(content)
         if crash is not None:
@@ -1280,16 +1296,18 @@ def _prefetch_job_data(cluster, job_id):
     try:
         try:
             log_result = get_job_log_files(cluster, job_id)
-            _cache_set(_log_index_cache, (cluster, job_id), log_result)
-            files = log_result.get("files", [])
+            if log_result and not log_result.get("error"):
+                _cache_set(_log_index_cache, (cluster, job_id), log_result)
+            files = (log_result or {}).get("files", [])
             if files:
                 _extract_progress_with_source(cluster, job_id, files)
         except Exception:
             pass
         try:
             stats = get_job_stats(cluster, job_id)
-            _cache_set(_stats_cache, (cluster, job_id), stats)
-            _save_stats_snapshot(cluster, job_id, stats)
+            if stats.get("status") == "ok":
+                _cache_set(_stats_cache, (cluster, job_id), stats)
+                _save_stats_snapshot(cluster, job_id, stats)
         except Exception:
             pass
     finally:
@@ -1557,6 +1575,9 @@ squeue -u $USER -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
             parts = line[5:].split("|")
             if len(parts) >= 7:
                 jid = parts[0].strip()
+                existing = _cache_get(_stats_cache, (cluster, jid), STATS_TTL_SEC)
+                if existing and existing.get("status") == "ok" and not existing.get("_partial"):
+                    continue
                 _cache_set(_stats_cache, (cluster, jid), {
                     "status": "ok", "job_id": jid, "state": parts[1].strip(),
                     "nodes": parts[2].strip(), "cpus": parts[3].strip(),
@@ -1565,10 +1586,9 @@ squeue -u $USER -h -j "{ids_csv}" -o "%i|%T|%D|%C|%b|%N|%M" | sed 's/^/STAT:/'
                     "ave_cpu": "", "ave_rss": "", "max_rss": "", "max_vmsize": "", "_partial": True,
                 })
 
-    # Log discovery per job (SSH scontrol first, mount fallback)
     for jid in ids:
         from .logs import get_job_log_files
         log_result = get_job_log_files(cluster, jid)
-        if log_result and log_result.get("files"):
+        if log_result and log_result.get("files") and not log_result.get("error"):
             _cache_set(_log_index_cache, (cluster, jid), log_result)
             _extract_progress_with_source(cluster, jid, log_result["files"])

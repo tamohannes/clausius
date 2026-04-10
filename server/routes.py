@@ -34,7 +34,7 @@ from .db import (
     get_history, get_projects, get_db,
     _restore_dependency_fields,
 )
-from .ssh import ssh_run, ssh_run_with_timeout, ssh_run_data, ssh_run_data_with_timeout
+from .ssh import ssh_run, ssh_run_with_timeout, ssh_run_data, ssh_run_data_with_timeout, get_circuit_breaker_status
 from .mounts import (
     resolve_mounted_path, resolve_file_path,
     list_local_dir, prefetch_nested_dir_cache_local,
@@ -57,6 +57,12 @@ from .db import get_run_with_jobs
 
 api = Blueprint("api", __name__)
 
+
+@api.app_errorhandler(Exception)
+def _handle_unhandled(exc):
+    _log.exception("Unhandled exception on %s %s", request.method, request.path)
+    return jsonify({"status": "error", "error": str(exc)}), 500
+
 _active_requests = 0
 _active_lock = threading.Lock()
 _MAX_ACTIVE = 28
@@ -72,17 +78,26 @@ _HEAVY_PREFIXES = (
 @api.before_request
 def _start_timer():
     g._req_start = time.monotonic()
+    g._counted = False
     global _active_requests
+    path = request.path
+    is_heavy = path.startswith(_HEAVY_PREFIXES)
     with _active_lock:
-        _active_requests += 1
-        count = _active_requests
-    if count >= _MAX_ACTIVE and request.path.startswith(_HEAVY_PREFIXES):
-        _log.warning("load shedding: %d active, rejecting %s", count, request.path)
+        if is_heavy and _active_requests >= _MAX_ACTIVE:
+            count = _active_requests
+        else:
+            _active_requests += 1
+            g._counted = True
+            count = None
+    if count is not None:
+        _log.warning("load shedding: %d active, rejecting %s", count, path)
         return jsonify({"status": "error", "error": "server busy"}), 503
 
 
 @api.teardown_request
 def _release_load(exc):
+    if not getattr(g, '_counted', False):
+        return
     global _active_requests
     with _active_lock:
         _active_requests = max(0, _active_requests - 1)
@@ -588,6 +603,7 @@ def api_cancel(cluster, job_id):
         ).start()
         return jsonify({"status": "ok"})
     except Exception as e:
+        _log.exception("cancel %s/%s failed", cluster, job_id)
         return jsonify({"status": "error", "error": str(e)})
 
 
@@ -619,6 +635,7 @@ def api_cancel_jobs(cluster):
         ).start()
         return jsonify({"status": "ok", "cancelled": len(sanitized)})
     except Exception as e:
+        _log.exception("cancel_jobs %s failed", cluster)
         return jsonify({"status": "error", "error": str(e)})
 
 
@@ -664,6 +681,7 @@ def api_run_script(cluster):
             "cluster": cluster,
         })
     except Exception as e:
+        _log.exception("run_script on %s failed", cluster)
         return jsonify({"status": "error", "error": str(e)})
 
 
@@ -1001,7 +1019,8 @@ def api_log_files(cluster, job_id):
             else:
                 content = fetch_log_tail(cluster, first_path, 300)
                 source = "local"
-            _cache_set(_log_content_cache, cache_key, content)
+            if not any(content.startswith(p) for p in ("Could not read log:", "File not found on cluster:", "Invalid local process")):
+                _cache_set(_log_content_cache, cache_key, content)
             resp["first_content"] = content
             resp["first_source"] = source
             resp["first_resolved_path"] = resolved
@@ -1061,6 +1080,7 @@ def api_ls(cluster):
         _cache_set(_dir_list_cache, cache_key, payload)
         return jsonify(payload)
     except Exception as e:
+        _log.exception("ls %s:%s failed", cluster, path)
         return jsonify({"status": "error", "error": str(e)})
 
 
@@ -1102,7 +1122,8 @@ def api_log(cluster, job_id):
         else:
             content = fetch_log_tail(cluster, log_path, lines)
             source = "local"
-        _cache_set(_log_content_cache, cache_key, content)
+        if not any(content.startswith(p) for p in ("Could not read log:", "File not found on cluster:", "Invalid local process")):
+            _cache_set(_log_content_cache, cache_key, content)
         pct = extract_progress(content)
         if pct is not None:
             _cache_set(_progress_cache, (cluster, str(job_id)), pct)
@@ -1156,6 +1177,7 @@ def api_log_full(cluster, job_id):
             result = subprocess.run(["sed", "-n", f"{start},{end}p", local_path], capture_output=True, text=True, timeout=15)
             content = result.stdout or "(empty)"
         except Exception as e:
+            _log.exception("log_full local read %s/%s failed", cluster, job_id)
             return jsonify({"status": "error", "error": str(e)})
     else:
         try:
@@ -1168,6 +1190,7 @@ def api_log_full(cluster, job_id):
             content, _ = ssh_run_data_with_timeout(cluster, f"sed -n '{start},{end}p' '{log_path}' 2>/dev/null", timeout_sec=15)
             content = content or "(empty)"
         except Exception as e:
+            _log.exception("log_full SSH read %s/%s failed", cluster, job_id)
             return jsonify({"status": "error", "error": str(e)})
 
     return jsonify({"status": "ok", "content": content, "page": page, "page_size": page_size,
@@ -1217,6 +1240,7 @@ def api_jsonl_index(cluster, job_id):
         return jsonify({"status": "ok", "total": total, "count": len(records),
                         "mode": mode, "limit": limit, "records": records, "source": "ssh"})
     except Exception as e:
+        _log.exception("jsonl_index %s/%s failed", cluster, job_id)
         return jsonify({"status": "error", "error": str(e)})
 
 
@@ -1241,7 +1265,19 @@ def api_jsonl_record(cluster, job_id):
         out, _ = ssh_run_data_with_timeout(cluster, cmd, timeout_sec=10)
         return jsonify({"status": "ok", "line": line_num, "content": out.strip(), "source": "ssh"})
     except Exception as e:
+        _log.exception("jsonl_record %s/%s line %d failed", cluster, job_id, line_num)
         return jsonify({"status": "error", "error": str(e)})
+
+
+@api.route("/api/health")
+def api_health():
+    """Lightweight health check with circuit breaker and load status."""
+    return jsonify({
+        "status": "ok",
+        "active_requests": _active_requests,
+        "max_active": _MAX_ACTIVE,
+        "circuit_breakers": get_circuit_breaker_status(),
+    })
 
 
 @api.route("/api/settings")
@@ -1286,6 +1322,7 @@ def api_settings_post():
     try:
         reload_config(merged)
     except Exception as exc:
+        _log.exception("settings reload failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
     return jsonify({"status": "ok", "settings": settings_response()})
@@ -1396,6 +1433,7 @@ def api_recommend():
             accounts=accounts,
         )
     except Exception as exc:
+        _log.exception("recommend failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
     return jsonify({"status": "ok", "recommendations": results})
@@ -1490,6 +1528,7 @@ def api_wait_calibration():
     try:
         return jsonify(get_wait_calibration())
     except Exception as exc:
+        _log.exception("wait_calibration failed")
         return jsonify({"error": str(exc)}), 500
 
 
@@ -1507,6 +1546,7 @@ def api_wds_history():
         )
         return jsonify({"status": "ok", "rows": rows, "count": len(rows)})
     except Exception as exc:
+        _log.exception("wds_history failed")
         return jsonify({"status": "error", "error": str(exc)}), 500
 
 

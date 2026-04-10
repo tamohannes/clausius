@@ -67,6 +67,11 @@
   <div class="nav-splitter" id="nav-splitter" title="Drag to resize sidebar"></div>
 
   <div class="content-shell">
+    <div id="error-banner" class="error-banner hidden">
+      <span id="error-banner-msg"></span>
+      <button class="error-banner-dismiss" onclick="_clearErrorBanner()" title="Dismiss">&times;</button>
+    </div>
+
     <!-- Live view -->
     <div class="live-view" id="live-view">
       <main><div id="grid"></div></main>

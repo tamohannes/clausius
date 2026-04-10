@@ -1201,9 +1201,11 @@ async function _loadMapData(project, forceRefresh = false) {
   try {
     const res = await fetch(`/api/logbook/${encodeURIComponent(project)}/map`);
     const data = await res.json();
-    _mapData = data;
-    _mapDataProject = project;
-    _renderMapView(el, data);
+    if (data && !data.error) {
+      _mapData = data;
+      _mapDataProject = project;
+    }
+    _renderMapView(el, data && !data.error ? data : (_mapData || data));
   } catch (e) {
     el.innerHTML = _renderMapToggle() + '<div class="lb-main-empty" style="color:var(--red)">Failed to load map</div>';
   }

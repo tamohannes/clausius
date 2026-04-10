@@ -111,14 +111,14 @@ async function _fetchProjectData(showToast) {
     const cachedLive = (typeof allData !== 'undefined' && Object.keys(allData).length) ? allData : null;
     const liveRes = cachedLive || await fetch('/api/jobs').then(r => r.json()).catch(() => ({}));
 
-    _projLiveJobs = [];
+    const newJobs = [];
     const clusterActivity = {};
     if (typeof liveRes === 'object' && !Array.isArray(liveRes)) {
       for (const [cname, cdata] of Object.entries(liveRes)) {
         if (!cdata || cdata.status !== 'ok') continue;
         for (const j of (cdata.jobs || [])) {
           if (j.project === name) {
-            _projLiveJobs.push({ ...j, _cluster: cname });
+            newJobs.push({ ...j, _cluster: cname });
             const st = (j.state || '').toUpperCase();
             if (!j._pinned) {
               if (!clusterActivity[cname]) clusterActivity[cname] = { running: 0, pending: 0 };
@@ -129,6 +129,7 @@ async function _fetchProjectData(showToast) {
         }
       }
     }
+    if (newJobs.length || !_projLiveJobs.length) _projLiveJobs = newJobs;
 
     _renderProjStats(clusterActivity);
     _renderProjLive();

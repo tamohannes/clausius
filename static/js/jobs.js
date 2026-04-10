@@ -1,3 +1,36 @@
+// ── Error banner ─────────────────────────────────────────────────────────────
+let _bannerErrors = {};
+let _bannerTimer = null;
+
+function _setErrorBanner(key, msg) {
+  _bannerErrors[key] = msg;
+  _renderErrorBanner();
+}
+
+function _clearErrorBannerKey(key) {
+  delete _bannerErrors[key];
+  _renderErrorBanner();
+}
+
+function _clearErrorBanner() {
+  _bannerErrors = {};
+  _renderErrorBanner();
+}
+
+function _renderErrorBanner() {
+  const el = document.getElementById('error-banner');
+  const msgEl = document.getElementById('error-banner-msg');
+  if (!el || !msgEl) return;
+  const msgs = Object.values(_bannerErrors);
+  if (!msgs.length) {
+    el.classList.add('hidden');
+    return;
+  }
+  msgEl.textContent = msgs.length === 1 ? msgs[0] : msgs.join(' · ');
+  el.classList.remove('hidden');
+}
+
+
 // ── App tabs ─────────────────────────────────────────────────────────────────
 const _tabIcons = {
   live:    '⚡', history: '⏱',
@@ -856,15 +889,18 @@ async function _doFetchAll() {
   // 1) Always render cached data immediately (even if stale — better than empty).
   try {
     const res = await fetchWithTimeout('/api/jobs');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const cached = await res.json();
     const hasData = Object.values(cached).some(d => d.updated);
     if (hasData) {
       allData = cached;
       _fillMissing();
       _renderAll();
+      _clearErrorBannerKey('jobs');
     }
   } catch (e) {
     console.warn('Initial job fetch failed, will retry per-cluster', e);
+    _setErrorBanner('jobs', `Server unreachable — retrying (${e.message})`);
   }
 
   if (!Object.keys(allData).length && !grid.children.length) _showLoadingSkeleton();
@@ -905,22 +941,35 @@ async function _forceRefreshAll() {
 }
 
 async function _refreshClusters(names) {
+  const failed = [];
   const promises = names.map(name =>
     fetchWithTimeout(`/api/jobs/${name}`)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(data => {
         const prev = allData[name];
         const prevOk = prev && prev.status === 'ok' && prev.jobs && prev.jobs.length;
-        if (data.status !== 'ok' && prevOk) return;
+        if (data.status !== 'ok' && prevOk) { failed.push(name); return; }
         if (!data.updated && prevOk) return;
         if (prev && prev.updated && data.updated && data.updated < prev.updated) return;
         allData[name] = data;
         _fillMissing();
         _scheduleRender();
       })
-      .catch(err => { console.warn('Cluster refresh failed:', name, err); })
+      .catch(err => { failed.push(name); console.warn('Cluster refresh failed:', name, err); })
   );
   await Promise.allSettled(promises);
+  if (failed.length) {
+    const s = failed.length === 1
+      ? `${failed[0]} unreachable`
+      : `${failed.length} clusters unreachable (${failed.join(', ')})`;
+    _setErrorBanner('clusters', s + ' — retrying');
+  } else {
+    _clearErrorBannerKey('clusters');
+    _clearErrorBannerKey('jobs');
+  }
 }
 
 function _fillMissing() {

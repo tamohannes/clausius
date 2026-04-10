@@ -206,7 +206,7 @@ def _classify_accessibility(partitions, user_account=""):
 def _fetch_partitions(cluster_name):
     """SSH into a cluster and parse partition data. Returns list of dicts."""
     try:
-        out, err = ssh_run_with_timeout(cluster_name, _FETCH_SCRIPT, timeout_sec=15)
+        out, err = ssh_run_with_timeout(cluster_name, _FETCH_SCRIPT, timeout_sec=10)
     except Exception as exc:
         log.warning("partitions: SSH to %s failed: %s", cluster_name, exc)
         return None

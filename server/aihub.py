@@ -27,6 +27,7 @@ _opensearch_sem = threading.Semaphore(6)
 CLUSTER_NAME_MAP = {
     "eos": "eos",
     "dfw": "cw-dfw-cs-001",
+    "aws-dfw": "aws-dfw-cs-001",
     "hsg": "oci-hsg-cs-001",
     "iad": "draco-oci-iad",
     "ord": "cs-oci-ord",

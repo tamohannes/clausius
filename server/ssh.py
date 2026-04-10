@@ -51,13 +51,74 @@ _bg_locks = {}          # cluster -> Lock
 _data_pool = {}         # cluster -> {"client": SSHClient, "last_used": float}
 _data_locks = {}        # cluster -> Lock
 
-# Global concurrency limit: at most 16 of 32 gthread workers can be
+# Global concurrency limit: at most 10 of 32 gthread workers can be
 # in SSH I/O simultaneously, leaving the rest free for cached responses.
-_ssh_semaphore = threading.Semaphore(16)
+_ssh_semaphore = threading.Semaphore(10)
 
 # Channel-open timeout is capped independently of command timeout.
 # If the server can't open a channel in this window, the transport is broken.
 _CHAN_OPEN_TIMEOUT = 5
+
+# ── Circuit breaker ──────────────────────────────────────────────────────────
+# When a cluster fails SSH, back off for _CB_COOLDOWN_SEC before retrying.
+# This prevents a dead cluster from consuming all worker threads on timeouts.
+
+_CB_COOLDOWN_SEC = 60
+_cb_lock = threading.Lock()
+_cb_failures = {}  # cluster -> {"ts": monotonic, "count": int}
+
+
+def _cb_record_failure(cluster):
+    with _cb_lock:
+        rec = _cb_failures.get(cluster)
+        now = time.monotonic()
+        if rec:
+            rec["ts"] = now
+            rec["count"] = min(rec["count"] + 1, 10)
+            cooldown = min(_CB_COOLDOWN_SEC * rec["count"], 300)
+            log.warning("circuit breaker: %s failure #%d, cooldown %ds",
+                        cluster, rec["count"], cooldown)
+        else:
+            _cb_failures[cluster] = {"ts": now, "count": 1}
+            log.warning("circuit breaker OPEN: %s (first failure, cooldown %ds)",
+                        cluster, _CB_COOLDOWN_SEC)
+
+
+def _cb_record_success(cluster):
+    with _cb_lock:
+        was_open = cluster in _cb_failures
+        _cb_failures.pop(cluster, None)
+    if was_open:
+        log.warning("circuit breaker CLOSED: %s recovered", cluster)
+
+
+def _cb_is_open(cluster):
+    """True if the circuit breaker is open (cluster should be skipped)."""
+    with _cb_lock:
+        rec = _cb_failures.get(cluster)
+        if not rec:
+            return False
+        elapsed = time.monotonic() - rec["ts"]
+        cooldown = min(_CB_COOLDOWN_SEC * rec["count"], 300)
+        if elapsed >= cooldown:
+            return False
+        return True
+
+
+def get_circuit_breaker_status():
+    """Return current CB state for diagnostics / the settings page."""
+    with _cb_lock:
+        now = time.monotonic()
+        return {
+            cluster: {
+                "failures": rec["count"],
+                "cooldown_remaining": max(
+                    0,
+                    round(min(_CB_COOLDOWN_SEC * rec["count"], 300) - (now - rec["ts"]))
+                ),
+            }
+            for cluster, rec in _cb_failures.items()
+        }
 
 
 # ── Thread-based hard timeout wrapper ────────────────────────────────────────
@@ -419,6 +480,11 @@ def _exec_on_transport(transport, command, timeout_sec):
 
 def _ssh_exec_data(cluster_name, command, timeout_sec):
     """Execute on the data-copier node, falling back to login on failure."""
+    if _cb_is_open(cluster_name):
+        raise paramiko.SSHException(
+            f"SSH to {cluster_name}: circuit breaker open (cluster recently unreachable)"
+        )
+
     cfg = CLUSTERS.get(cluster_name, {})
     data_host = cfg.get("data_host", "")
     if not data_host:
@@ -448,6 +514,11 @@ def _ssh_exec_data(cluster_name, command, timeout_sec):
 
 
 def _ssh_exec(cluster_name, command, timeout_sec):
+    if _cb_is_open(cluster_name):
+        raise paramiko.SSHException(
+            f"SSH to {cluster_name}: circuit breaker open (cluster recently unreachable)"
+        )
+
     if getattr(_thread_ctx, "standalone", False):
         pool = _bg_pool
         lock = _get_bg_lock(cluster_name)
@@ -469,10 +540,12 @@ def _ssh_exec(cluster_name, command, timeout_sec):
                     rec = pool.get(cluster_name)
                     if rec:
                         rec["last_used"] = time.monotonic()
+                _cb_record_success(cluster_name)
                 return out, err
             except Exception:
                 _close_pool_client(pool, lock, cluster_name)
                 if attempt == 2:
+                    _cb_record_failure(cluster_name)
                     raise
     finally:
         _ssh_semaphore.release()

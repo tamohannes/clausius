@@ -21,7 +21,7 @@ max_requests = 0
 
 accesslog = None
 errorlog = "-"
-loglevel = "warning"
+loglevel = "info"
 
 
 def post_fork(server, worker):
