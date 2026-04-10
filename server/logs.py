@@ -369,14 +369,28 @@ def _try_local_discovery(cluster_name, job_id, db_path):
     return {"files": files, "dirs": dirs}
 
 
+def _db_custom_log_dir(cluster_name, job_id):
+    try:
+        from .db import get_custom_log_dir
+        return get_custom_log_dir(cluster_name, job_id)
+    except Exception:
+        return ""
+
+
 def get_job_log_files(cluster_name, job_id):
     if cluster_name == "local":
         return local_job_log_files(job_id)
 
     db_path = _db_log_path(cluster_name, job_id)
+    custom_dir = _db_custom_log_dir(cluster_name, job_id)
 
     local = _try_local_discovery(cluster_name, job_id, db_path)
     if local:
+        if custom_dir:
+            already = {d["path"].rstrip("/") for d in local.get("dirs", [])}
+            if custom_dir.rstrip("/") not in already:
+                local["dirs"] = [{"label": "custom logs", "path": custom_dir}] + local.get("dirs", [])
+        local["custom_log_dir"] = custom_dir
         return local
     db_logdir_clause = ""
     if db_path:
@@ -459,13 +473,18 @@ fi
     files.sort(key=lambda f: ORDER.get(f["label"], 10))
     dirs = _derive_result_dirs(jobid_files, cluster_name) + extra_dirs
 
+    if custom_dir:
+        already = {d["path"].rstrip("/") for d in dirs}
+        if custom_dir.rstrip("/") not in already:
+            dirs.insert(0, {"label": "custom logs", "path": custom_dir})
+
     if not files and not dirs:
         fallback = _search_log_bases(cluster_name, job_id)
         if fallback:
             files = fallback.get("files", [])
             dirs = fallback.get("dirs", [])
 
-    return {"files": files, "dirs": dirs}
+    return {"files": files, "dirs": dirs, "custom_log_dir": custom_dir}
 
 
 def _search_log_bases(cluster_name, job_id):
@@ -535,6 +554,193 @@ def get_job_log_files_cached(cluster_name, job_id, force=False):
     if not value.get("error"):
         _cache_set(_log_index_cache, key, value)
     return value
+
+
+# ─── Custom metric extraction ─────────────────────────────────────────────────
+
+def extract_custom_metrics(cluster_name, job_id):
+    """Run configured regex extractors against files in custom_log_dir.
+
+    Returns {"status": "ok", "metrics": [{"name": ..., "value": ...}, ...]}
+    or {"status": "error", "error": "..."}.
+    """
+    from .db import get_custom_metrics_config, get_custom_log_dir
+
+    raw_cfg = get_custom_metrics_config(cluster_name, str(job_id))
+    if not raw_cfg:
+        return {"status": "ok", "metrics": [], "unconfigured": True}
+    try:
+        cfg = json.loads(raw_cfg)
+    except json.JSONDecodeError:
+        return {"status": "error", "error": "Invalid metrics config JSON"}
+
+    log_dir = get_custom_log_dir(cluster_name, str(job_id))
+    if not log_dir:
+        return {"status": "error", "error": "No custom_log_dir set for this job"}
+
+    extractors = cfg.get("extractors", [])
+    if extractors is None:
+        extractors = []
+    if not isinstance(extractors, list):
+        return {"status": "error", "error": "Invalid metrics config: extractors must be a list"}
+    if not extractors:
+        return {"status": "ok", "metrics": []}
+
+    file_glob = cfg.get("file_glob", "*{job_id}*")
+    if file_glob is None:
+        file_glob = "*{job_id}*"
+    if not isinstance(file_glob, str):
+        return {"status": "error", "error": "Invalid metrics config: file_glob must be a string"}
+    file_glob = file_glob.replace("{job_id}", str(job_id))
+
+    validated_extractors = []
+    for i, ext in enumerate(extractors):
+        if not isinstance(ext, dict):
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} must be an object"}
+
+        name = ext.get("name", f"metric_{i}")
+        regex = ext.get("regex", "")
+        mode = ext.get("mode", "last")
+        group = ext.get("group", 1)
+
+        if name is None:
+            name = f"metric_{i}"
+        if regex is None:
+            regex = ""
+        if not isinstance(name, str):
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} name must be a string"}
+        if not isinstance(regex, str):
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} regex must be a string"}
+        try:
+            group = int(group)
+        except (TypeError, ValueError):
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} group must be an integer"}
+        if group < 1:
+            return {"status": "error", "error": f"Invalid metrics config: extractor {i + 1} group must be >= 1"}
+
+        compiled = None
+        if regex:
+            try:
+                compiled = re.compile(regex)
+            except re.error as e:
+                return {"status": "error", "error": f"Invalid regex for metric '{name}': {e}"}
+
+        validated_extractors.append({
+            "index": i,
+            "name": name,
+            "regex": regex,
+            "group": group,
+            "mode": mode or "last",
+            "compiled": compiled,
+        })
+
+    safe_dir = log_dir.rstrip('/').replace("'", "'\\''")
+    safe_glob = file_glob.replace("'", "'\\''")
+
+    script_parts = [
+        "#!/bin/sh",
+        f"LOGDIR='{safe_dir}'",
+        f"JOB_GLOB='{safe_glob}'",
+        "FILES_LIST=\"${TMPDIR:-/tmp}/clausius-metrics-$$.txt\"",
+        "collect_metric_files() {",
+        "  found=0",
+        "  for f in $JOB_GLOB; do",
+        "    [ -f \"$f\" ] || continue",
+        "    printf '%s\\n' \"$f\"",
+        "    found=1",
+        "  done",
+        "  if [ \"$found\" -eq 1 ]; then",
+        "    return 0",
+        "  fi",
+        "  for pat in *.log *.out *.err *.txt *.json *.jsonl *.jsonl-async *.md *; do",
+        "    for f in $pat; do",
+        "      [ -f \"$f\" ] || continue",
+        "      printf '%s\\n' \"$f\"",
+        "    done",
+        "  done",
+        "}",
+        "cd \"$LOGDIR\" 2>/dev/null || exit 0",
+        "collect_metric_files | awk '!seen[$0]++' > \"$FILES_LIST\"",
+    ]
+    for ext in validated_extractors:
+        regex = ext["regex"]
+        if not regex:
+            continue
+        safe_regex = regex.replace("'", "'\\''")
+        script_parts.append(
+            f"echo '===METRIC_{ext['index']}===';"
+            f" while IFS= read -r f; do grep -oP '{safe_regex}' \"$f\" 2>/dev/null || true; done < \"$FILES_LIST\""
+        )
+    script_parts.append("rm -f \"$FILES_LIST\"")
+    script = "\n".join(script_parts)
+
+    try:
+        out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=20)
+    except Exception as e:
+        return {"status": "error", "error": f"SSH error: {e}"}
+
+    metrics = []
+    sections = re.split(r"===METRIC_(\d+)===\n?", out)
+    # sections: ['', '0', '<matches>\n', '1', '<matches>\n', ...]
+    section_map = {}
+    for idx in range(1, len(sections) - 1, 2):
+        section_map[int(sections[idx])] = sections[idx + 1]
+
+    for ext in validated_extractors:
+        name = ext["name"]
+        group = ext["group"]
+        mode = ext["mode"]
+        compiled = ext["compiled"]
+        raw_text = section_map.get(ext["index"], "")
+
+        values = []
+        for line in raw_text.strip().splitlines():
+            if not line.strip():
+                continue
+            m = compiled.search(line) if compiled else None
+            if m:
+                try:
+                    values.append(m.group(group))
+                except IndexError:
+                    pass
+
+        value = _apply_mode(values, mode)
+        metrics.append({"name": name, "value": value, "match_count": len(values)})
+
+    return {"status": "ok", "metrics": metrics}
+
+
+def _apply_mode(values, mode):
+    """Reduce a list of matched strings to a single value."""
+    if not values:
+        return None
+    if mode == "first":
+        return values[0]
+    if mode == "last":
+        return values[-1]
+    if mode == "count":
+        return str(len(values))
+    nums = []
+    for v in values:
+        try:
+            nums.append(float(v))
+        except (ValueError, TypeError):
+            pass
+    if not nums:
+        return values[-1]
+    if mode == "max":
+        return str(max(nums))
+    if mode == "min":
+        return str(min(nums))
+    if mode == "diff":
+        if len(nums) >= 2:
+            result = nums[-1] - nums[0]
+            return str(int(result) if result == int(result) else round(result, 4))
+        return str(int(nums[0]) if nums[0] == int(nums[0]) else nums[0])
+    if mode == "avg":
+        result = sum(nums) / len(nums)
+        return str(round(result, 4))
+    return values[-1]
 
 
 # ─── JSONL readers ───────────────────────────────────────────────────────────
