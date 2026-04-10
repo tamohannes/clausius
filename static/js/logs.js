@@ -30,7 +30,7 @@ async function openLog(cluster, jobId, jobName, force) {
 
   try {
     const qs = force ? '?force=1&include_first=1' : '?include_first=1';
-    const res = await fetch(`/api/log_files/${cluster}/${jobId}${qs}`);
+    const res = await fetchWithTimeout(`/api/log_files/${cluster}/${jobId}${qs}`, {}, 15000);
     const data = await res.json();
 
     if (data.files && data.files[0] && data.files[0].error) {
@@ -91,7 +91,13 @@ async function openLog(cluster, jobId, jobName, force) {
       document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">no files</div>';
     }
   } catch (e) {
-    document.getElementById('modal-content').textContent = 'Failed: ' + e;
+    const msg = e.name === 'TimeoutError' || e.name === 'AbortError'
+      ? 'Timed out discovering log files — the cluster may be slow or unreachable.'
+      : 'Failed: ' + e;
+    document.getElementById('modal-content').className = 'placeholder';
+    document.getElementById('modal-content').textContent = msg;
+    document.getElementById('content-path').textContent = 'error';
+    document.getElementById('tree-pane').innerHTML = '<div class="tree-loading" style="color:var(--muted)">unavailable</div>';
   }
 }
 
@@ -227,7 +233,7 @@ async function expandDir(path, container, depth) {
 
   container.innerHTML = '<div class="tree-loading">loading…</div>';
   try {
-    const res = await fetch(`/api/ls/${_exCluster}?path=${encodeURIComponent(path)}&force=1`);
+    const res = await fetchWithTimeout(`/api/ls/${_exCluster}?path=${encodeURIComponent(path)}&force=1`);
     const data = await res.json();
     if (data.status !== 'ok') {
       container.innerHTML = `<div class="tree-loading">${data.error || '(error)'}</div>`;
@@ -398,7 +404,7 @@ function renderJsonlLazyViewer(data, filePath) {
       const line = det.dataset.line;
       const path = det.dataset.path;
       try {
-        const res = await fetch(`/api/jsonl_record/${_exCluster}/${_exJobId}?path=${encodeURIComponent(path)}&line=${line}`);
+        const res = await fetchWithTimeout(`/api/jsonl_record/${_exCluster}/${_exJobId}?path=${encodeURIComponent(path)}&line=${line}`);
         const d = await res.json();
         if (d.status === 'ok' && d.content) {
           try {
@@ -435,7 +441,7 @@ function renderJsonlLazyViewer(data, filePath) {
   if (total < 0 && filePath) {
     setTimeout(async () => {
       try {
-        const res = await fetch(`/api/jsonl_index/${_exCluster}/${_exJobId}?path=${encodeURIComponent(filePath)}&mode=first&limit=0`);
+        const res = await fetchWithTimeout(`/api/jsonl_index/${_exCluster}/${_exJobId}?path=${encodeURIComponent(filePath)}&mode=first&limit=0`);
         const d = await res.json();
         const el = document.getElementById(metaId);
         if (el && d.total > 0) {
@@ -878,7 +884,7 @@ async function viewFile(path, force) {
   const isJsonl = /\.jsonl(?:-async)?$/i.test(path);
   if (isJsonl) {
     try {
-      const res = await fetch(`/api/jsonl_index/${_exCluster}/${_exJobId}?path=${encodeURIComponent(path)}&mode=${jsonlMode}&limit=${jsonlLimit}`);
+      const res = await fetchWithTimeout(`/api/jsonl_index/${_exCluster}/${_exJobId}?path=${encodeURIComponent(path)}&mode=${jsonlMode}&limit=${jsonlLimit}`);
       const data = await res.json();
       const el = document.getElementById('modal-content');
       if (data.status !== 'ok') {
@@ -899,7 +905,7 @@ async function viewFile(path, force) {
   }
 
   try {
-    const res = await fetch(`/api/log/${_exCluster}/${_exJobId}?path=${encodeURIComponent(path)}&lines=300&force=${force ? 1 : 0}`);
+    const res = await fetchWithTimeout(`/api/log/${_exCluster}/${_exJobId}?path=${encodeURIComponent(path)}&lines=300&force=${force ? 1 : 0}`);
     const data = await res.json();
     const el = document.getElementById('modal-content');
     const raw = (data.status === 'ok' ? data.content : data.error) || '(empty)';
@@ -1076,7 +1082,7 @@ async function _liveTick() {
   try {
     let url = `/api/log/${_exCluster}/${_exJobId}?path=${encodeURIComponent(_currentFilePath)}&lines=300&force=1`;
     if (_liveLastHash) url += `&if_hash=${_liveLastHash}`;
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url);
     const data = await res.json();
     if (!_liveActive) return;
     if (data.status !== 'ok') { _scheduleLiveTick(); return; }

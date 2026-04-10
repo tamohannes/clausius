@@ -521,7 +521,10 @@ function renderCard(name, data) {
   const pinnedCompletedCount = jobs.filter(j => j._pinned && isCompletedState(j.state)).length;
   const liveCount   = jobs.filter(j => !j._pinned).length;
 
-  const cancelAllBtn = '';
+  const cancelableAll = jobs.filter(j => !j._pinned).map(j => j.jobid);
+  const cancelAllBtn = cancelableAll.length > 1 && name !== 'local'
+    ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="cancelGroup('${name}','${JSON.stringify(cancelableAll).replace(/"/g, '&quot;')}','all ${cancelableAll.length} jobs')">cancel all ${cancelableAll.length}</button>`
+    : '';
   const clearFailedBtn = pinnedFailedCount > 0
     ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="clearFailed('${name}')">clear ${pinnedFailedCount} failed</button>`
     : '';
@@ -593,9 +596,15 @@ function groupClusters(data) {
     if (!d) continue;
     if (name === 'local') { local.push(name); sectionMap[name] = 'local'; continue; }
     if (d.status === 'error') { failed.push(name); sectionMap[name] = 'unreachable'; continue; }
-    const liveJobs = (d.jobs || []).filter(j => !j._pinned);
+    const allJobs = d.jobs || [];
+    const liveJobs = allJobs.filter(j => !j._pinned);
+    const hasActiveJobs = liveJobs.length > 0
+      || allJobs.some(j => {
+        const s = (j.state || '').toUpperCase();
+        return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING';
+      });
     const hasFreshData = !!d.updated;
-    if (liveJobs.length > 0) {
+    if (hasActiveJobs) {
       active.push(name);
       _lastActiveSet.add(name);
       sectionMap[name] = 'active';
