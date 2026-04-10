@@ -57,10 +57,35 @@ from .db import get_run_with_jobs
 
 api = Blueprint("api", __name__)
 
+_active_requests = 0
+_active_lock = threading.Lock()
+_MAX_ACTIVE = 28
+
+_HEAVY_PREFIXES = (
+    "/api/aihub/", "/api/team_jobs", "/api/team_usage",
+    "/api/partition_summary", "/api/cluster_utilization",
+    "/api/log_files/", "/api/log/", "/api/log_full/",
+    "/api/jsonl_index/", "/api/jsonl_record/", "/api/ls/",
+)
+
 
 @api.before_request
 def _start_timer():
     g._req_start = time.monotonic()
+    global _active_requests
+    with _active_lock:
+        _active_requests += 1
+        count = _active_requests
+    if count >= _MAX_ACTIVE and request.path.startswith(_HEAVY_PREFIXES):
+        _log.warning("load shedding: %d active, rejecting %s", count, request.path)
+        return jsonify({"status": "error", "error": "server busy"}), 503
+
+
+@api.teardown_request
+def _release_load(exc):
+    global _active_requests
+    with _active_lock:
+        _active_requests = max(0, _active_requests - 1)
 
 
 @api.after_request

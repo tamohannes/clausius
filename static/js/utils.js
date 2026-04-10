@@ -2,6 +2,15 @@ const CLUSTERS = JSON.parse(document.getElementById('cluster-data').textContent 
 const USERNAME = (document.getElementById('username-data')?.textContent || '').trim();
 const TEAM = (document.getElementById('team-data')?.textContent || '').trim();
 
+const _nativeFetch = window.fetch;
+window.fetch = function(input, init) {
+  init = init || {};
+  if (!init.signal) {
+    init.signal = AbortSignal.timeout(20000);
+  }
+  return _nativeFetch.call(window, input, init);
+};
+
 function fetchWithTimeout(url, opts = {}, ms = 15000) {
   return fetch(url, { signal: AbortSignal.timeout(ms), ...opts });
 }
@@ -889,7 +898,13 @@ function _showComputeLoadBar(show) {
   bar.classList.toggle('active', show);
 }
 
+let _computeRefreshing = false;
 async function refreshPppAllocations(force) {
+  if (_computeRefreshing) return;
+  _computeRefreshing = true;
+  try { await _doRefreshPppAllocations(force); } finally { _computeRefreshing = false; }
+}
+async function _doRefreshPppAllocations(force) {
   const el = document.getElementById('ppp-alloc-body');
   if (!el) return;
 
@@ -2472,12 +2487,15 @@ document.addEventListener('visibilitychange', () => {
       clearInterval(_projRefreshTimer);
     }
   } else {
-    if (typeof fetchAll === 'function') fetchAll();
+    if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
+      refreshPppAllocations();
+    } else if (typeof currentTab !== 'undefined' && currentTab === 'project' && typeof _fetchProjectData === 'function') {
+      _fetchProjectData();
+    } else if (typeof fetchAll === 'function') {
+      fetchAll();
+    }
     if (typeof startCountdown === 'function' && typeof refreshIntervalSec !== 'undefined' && refreshIntervalSec > 0) {
       startCountdown();
-    }
-    if (typeof currentTab !== 'undefined' && currentTab === 'project' && typeof _fetchProjectData === 'function') {
-      _fetchProjectData();
     }
   }
 });

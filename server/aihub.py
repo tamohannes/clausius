@@ -11,6 +11,7 @@ import ssl
 import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 from .config import (
@@ -215,7 +216,12 @@ def get_ppp_allocations(accounts=None, clusters=None, force=False):
     if os_clusters:
         query["query"]["bool"]["filter"].insert(0, {"terms": {"s_cluster": os_clusters}})
 
-    resp = _opensearch_query(query)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        alloc_fut = pool.submit(_opensearch_query, query)
+        occ_fut = pool.submit(_fetch_cluster_occupancy_snapshot, os_clusters)
+        resp = alloc_fut.result()
+        occ = occ_fut.result() or {}
+
     if not resp:
         return {"clusters": {}}
 
@@ -269,8 +275,6 @@ def get_ppp_allocations(accounts=None, clusters=None, force=False):
 
         if cluster_data["accounts"]:
             result["clusters"][friendly] = cluster_data
-
-    occ = _fetch_cluster_occupancy_snapshot(os_clusters)
     for friendly, occ_data in occ.items():
         if friendly in result["clusters"]:
             result["clusters"][friendly]["cluster_occupied_gpus"] = occ_data["occupied"]

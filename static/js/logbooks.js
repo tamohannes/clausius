@@ -72,10 +72,12 @@ function initLogbookPage() {
   const sel = document.getElementById('lb-project-select');
   if (!sel) return;
 
-  Promise.all([
-    fetch('/api/projects').then(r => r.json()).catch(() => []),
-    fetch('/api/logbook_projects').then(r => r.json()).catch(() => []),
-  ]).then(([jobProjects, lbProjects]) => {
+  Promise.allSettled([
+    fetchWithTimeout('/api/projects').then(r => r.json()),
+    fetchWithTimeout('/api/logbook_projects').then(r => r.json()),
+  ]).then((results) => {
+    let jobProjects = results[0].status === 'fulfilled' ? results[0].value : [];
+    let lbProjects = results[1].status === 'fulfilled' ? results[1].value : [];
     if (!Array.isArray(jobProjects)) jobProjects = [];
     if (!Array.isArray(lbProjects)) lbProjects = [];
 

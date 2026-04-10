@@ -14,6 +14,43 @@ from .config import (
 
 log = logging.getLogger(__name__)
 
+_mount_ok = {}
+_mount_ok_ts = {}
+_MOUNT_OK_TTL = 30
+
+
+def _is_cluster_mount_ok(cluster_name):
+    """Fast non-blocking check: is this cluster's mount known-healthy?
+
+    Caches the result for _MOUNT_OK_TTL seconds.  On cache miss it checks
+    /proc/mounts (never blocks) then runs _test_mount_alive (subprocess
+    with 4 s timeout) to avoid hanging on stale FUSE.
+    """
+    now = time.monotonic()
+    ts = _mount_ok_ts.get(cluster_name, 0)
+    if now - ts < _MOUNT_OK_TTL:
+        return _mount_ok.get(cluster_name, False)
+
+    roots = MOUNT_MAP.get(cluster_name, [])
+    if not roots:
+        _mount_ok[cluster_name] = False
+        _mount_ok_ts[cluster_name] = now
+        return False
+
+    mps = _proc_mount_points()
+    any_mounted = any(_resolve(r) in mps for r in roots)
+    if not any_mounted:
+        _mount_ok[cluster_name] = False
+        _mount_ok_ts[cluster_name] = now
+        return False
+
+    ok = _test_mount_alive(roots[0])
+    _mount_ok[cluster_name] = ok
+    _mount_ok_ts[cluster_name] = now
+    if not ok:
+        log.warning("Mount for %s is stale, falling back to SSH", cluster_name)
+    return ok
+
 
 def _proc_mount_points():
     """Read /proc/mounts and return a set of mounted paths (no filesystem stat).
@@ -116,6 +153,8 @@ def resolve_mounted_path(cluster_name, remote_path, want_dir=False):
     checker = os.path.isdir if want_dir else os.path.isfile
     if remote_path.startswith("/home/") and checker(remote_path):
         return remote_path
+    if cluster_name != "local" and not _is_cluster_mount_ok(cluster_name):
+        return ""
     for cand in _local_candidates_for_remote_path(cluster_name, remote_path):
         if checker(cand):
             return cand
@@ -485,10 +524,14 @@ def mount_health_check():
         if _test_mount_alive(test_path):
             continue
 
+        _mount_ok[cluster_name] = False
+        _mount_ok_ts[cluster_name] = time.monotonic()
         log.warning("Stale mount detected for %s (%s), remounting…", cluster_name, test_path)
         ok, msg = _remount_cluster(cluster_name)
         if ok:
             log.info("Remounted %s: %s", cluster_name, msg)
+            _mount_ok[cluster_name] = True
+            _mount_ok_ts[cluster_name] = time.monotonic()
             remounted += 1
         else:
             log.warning("Remount failed for %s: %s", cluster_name, msg)

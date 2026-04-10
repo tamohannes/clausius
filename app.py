@@ -5,6 +5,7 @@ Run production:  gunicorn -c gunicorn.conf.py app:app
 """
 
 import threading
+import time
 
 from flask import Flask
 
@@ -14,6 +15,13 @@ from server.routes import api
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024
 app.register_blueprint(api)
+
+_BOOT_TS = str(int(time.time()))
+
+
+@app.context_processor
+def _inject_static_version():
+    return {"v": _BOOT_TS}
 
 
 def _run_init():

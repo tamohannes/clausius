@@ -734,7 +734,7 @@ async function prefetchAndUpdateProgress(data) {
   if (!batch.length) { _saveProgressCache(); return; }
   const hasPending = batch.some(j => (j.state || '').toUpperCase() === 'PENDING');
   try {
-    await Promise.all([
+    await Promise.allSettled([
       fetchWithTimeout('/api/prefetch_visible', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -822,8 +822,13 @@ function _isCacheFresh(data) {
   return false;
 }
 
+let _fetchAllRunning = false;
 async function fetchAll() {
-  if (document.hidden) return;
+  if (_fetchAllRunning || document.hidden) return;
+  _fetchAllRunning = true;
+  try { await _doFetchAll(); } finally { _fetchAllRunning = false; }
+}
+async function _doFetchAll() {
   const grid = document.getElementById('grid');
   if (!grid.children.length) _showLoadingSkeleton();
 

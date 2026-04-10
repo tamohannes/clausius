@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>clausius</title>
 <link rel="icon" type="image/svg+xml" id="favicon" href="{{ url_for('static', filename='icon.svg') }}">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v={{ v }}">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.21/dist/katex.min.js"></script>
 <script>
@@ -492,16 +492,16 @@
 <script id="team-data" type="text/plain">{{ team }}</script>
 <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
-<script src="{{ url_for('static', filename='js/utils.js') }}"></script>
-<script src="{{ url_for('static', filename='js/jobs.js') }}"></script>
-<script src="{{ url_for('static', filename='js/history.js') }}"></script>
-<script src="{{ url_for('static', filename='js/crash_detect.js') }}"></script>
-<script src="{{ url_for('static', filename='js/logs.js') }}"></script>
-<script src="{{ url_for('static', filename='js/explorer.js') }}"></script>
-<script src="{{ url_for('static', filename='js/runs.js') }}"></script>
-<script src="{{ url_for('static', filename='js/projects.js') }}"></script>
-<script src="{{ url_for('static', filename='js/logbooks.js') }}"></script>
-<script src="{{ url_for('static', filename='js/spotlight.js') }}"></script>
-<script src="{{ url_for('static', filename='js/settings.js') }}"></script>
+<script src="{{ url_for('static', filename='js/utils.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/jobs.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/history.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/crash_detect.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/logs.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/explorer.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/runs.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/projects.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/logbooks.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/spotlight.js') }}?v={{ v }}"></script>
+<script src="{{ url_for('static', filename='js/settings.js') }}?v={{ v }}"></script>
 </body>
 </html>

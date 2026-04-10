@@ -50,6 +50,7 @@ class TestResolveMountedPath:
         f.parent.mkdir(parents=True)
         f.write_text("hello")
         monkeypatch.setattr("server.mounts.MOUNT_MAP", {"c1": [str(tmp_path)]})
+        monkeypatch.setattr("server.mounts._is_cluster_mount_ok", lambda c: True)
         result = resolve_mounted_path("c1", f"/data/file.txt", want_dir=False)
         assert result and os.path.isfile(result)
 
@@ -58,6 +59,7 @@ class TestResolveMountedPath:
         d = tmp_path / "data" / "subdir"
         d.mkdir(parents=True)
         monkeypatch.setattr("server.mounts.MOUNT_MAP", {"c1": [str(tmp_path)]})
+        monkeypatch.setattr("server.mounts._is_cluster_mount_ok", lambda c: True)
         result = resolve_mounted_path("c1", f"/data/subdir", want_dir=True)
         assert result and os.path.isdir(result)
 
