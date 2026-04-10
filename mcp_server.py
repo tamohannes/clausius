@@ -278,7 +278,7 @@ def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
     if not sanitized:
         return {"status": "error", "error": "No valid job IDs"}
     try:
-        ssh_run_with_timeout(cluster, f"scancel {','.join(sanitized)}", timeout_sec=10)
+        ssh_run_with_timeout(cluster, f"scancel {' '.join(sanitized)}", timeout_sec=10)
         return {"status": "ok", "cancelled": len(sanitized)}
     except Exception as e:
         return {"status": "error", "error": str(e)}

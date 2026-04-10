@@ -630,7 +630,7 @@ def api_cancel_jobs(cluster):
                 return jsonify({"status": "partial", "cancelled": len(sanitized) - len(errors), "errors": errors})
             return jsonify({"status": "ok", "cancelled": len(sanitized)})
         threading.Thread(
-            target=lambda: ssh_run_with_timeout(cluster, f"scancel {','.join(sanitized)}", timeout_sec=10),
+            target=lambda: ssh_run_with_timeout(cluster, f"scancel {' '.join(sanitized)}", timeout_sec=10),
             daemon=True,
         ).start()
         return jsonify({"status": "ok", "cancelled": len(sanitized)})
