@@ -115,10 +115,21 @@ class TestParseGresGpuCount:
     def test_empty_gres(self):
         assert _parse_gres_gpu_count("") == 0
         assert _parse_gres_gpu_count("N/A") == 0
+        assert _parse_gres_gpu_count("(null)") == 0
 
     @pytest.mark.unit
     def test_multi_gres(self):
         assert _parse_gres_gpu_count("gpu:4,shard:2") == 4
+
+    @pytest.mark.unit
+    def test_gres_prefix(self):
+        assert _parse_gres_gpu_count("gres/gpu:4") == 4
+        assert _parse_gres_gpu_count("gres/gpu:b200:4") == 4
+
+    @pytest.mark.unit
+    def test_gres_prefix_with_socket(self):
+        assert _parse_gres_gpu_count("gres/gpu:4(S:0-1)") == 4
+        assert _parse_gres_gpu_count("gres/gpu:b200:4(S:0-1)") == 4
 
 
 class TestAihubCaching:

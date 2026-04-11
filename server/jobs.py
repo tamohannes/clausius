@@ -1426,17 +1426,26 @@ TEAM_JOBS_TTL_SEC = 120
 
 
 def _parse_gres_gpu_count(gres_str):
-    """Extract GPU count from a GRES string like 'gpu:8' or 'gpu:a100:4'."""
-    if not gres_str or gres_str == "N/A":
+    """Extract GPU count from a GRES string.
+
+    Handles: 'gpu:8', 'gpu:a100:4', 'gres/gpu:4', 'gres/gpu:b200:4(S:0-1)'
+    """
+    if not gres_str or gres_str in ("N/A", "(null)"):
         return 0
     for part in gres_str.split(","):
         part = part.strip().lower()
-        if part.startswith("gpu"):
-            segs = part.split(":")
+        if "gpu" not in part:
+            continue
+        idx = part.find("gpu")
+        gpu_part = part[idx:]
+        segs = gpu_part.split(":")
+        for seg in reversed(segs):
+            cleaned = seg.split("(")[0]
             try:
-                return int(segs[-1])
+                return int(cleaned)
             except ValueError:
-                return 1
+                continue
+        return 1
     return 0
 
 
