@@ -17,6 +17,14 @@ log = logging.getLogger(__name__)
 _mount_ok = {}
 _mount_ok_ts = {}
 _MOUNT_OK_TTL = 30
+_mount_ok_locks = {}
+_mount_ok_locks_lock = threading.Lock()
+
+def _get_mount_ok_lock(cluster_name):
+    with _mount_ok_locks_lock:
+        if cluster_name not in _mount_ok_locks:
+            _mount_ok_locks[cluster_name] = threading.Lock()
+        return _mount_ok_locks[cluster_name]
 
 
 def _is_cluster_mount_ok(cluster_name):
@@ -44,12 +52,25 @@ def _is_cluster_mount_ok(cluster_name):
         _mount_ok_ts[cluster_name] = now
         return False
 
-    ok = _test_mount_alive(roots[0])
-    _mount_ok[cluster_name] = ok
-    _mount_ok_ts[cluster_name] = now
-    if not ok:
-        log.warning("Mount for %s is stale, falling back to SSH", cluster_name)
-    return ok
+    lock = _get_mount_ok_lock(cluster_name)
+    if not lock.acquire(blocking=False):
+        # Another thread is already testing the mount. Return the last known state
+        # immediately to prevent thread exhaustion (thundering herd).
+        return _mount_ok.get(cluster_name, False)
+
+    try:
+        # Check cache again inside lock
+        if time.monotonic() - _mount_ok_ts.get(cluster_name, 0) < _MOUNT_OK_TTL:
+            return _mount_ok.get(cluster_name, False)
+
+        ok = _test_mount_alive(roots[0])
+        _mount_ok[cluster_name] = ok
+        _mount_ok_ts[cluster_name] = time.monotonic()
+        if not ok:
+            log.warning("Mount for %s is stale, falling back to SSH", cluster_name)
+        return ok
+    finally:
+        lock.release()
 
 
 def _proc_mount_points():
@@ -62,9 +83,25 @@ def _proc_mount_points():
         return set()
 
 
+_resolved_cache = {}
 def _resolve(path):
-    """Resolve a path using realpath so symlinks match /proc/mounts entries."""
-    return os.path.realpath(os.path.expanduser(path))
+    """Resolve a path using realpath so symlinks match /proc/mounts entries.
+    Cached to avoid hanging on stale FUSE mounts during live requests."""
+    if path not in _resolved_cache:
+        # We use a subprocess to resolve realpath safely without hanging the main thread
+        try:
+            import subprocess
+            proc = subprocess.run(
+                ["readlink", "-f", os.path.expanduser(path)],
+                capture_output=True, text=True, timeout=1
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                _resolved_cache[path] = proc.stdout.strip()
+            else:
+                _resolved_cache[path] = os.path.realpath(os.path.expanduser(path))
+        except (subprocess.TimeoutExpired, Exception):
+            _resolved_cache[path] = os.path.abspath(os.path.expanduser(path))
+    return _resolved_cache[path]
 
 
 def _is_mounted(path):
@@ -244,6 +281,8 @@ def mounted_root(cluster_name):
 
 def mounted_roots(cluster_name):
     """Return all currently mounted roots for a cluster."""
+    if cluster_name != "local" and not _is_cluster_mount_ok(cluster_name):
+        return []
     mps = _proc_mount_points()
     out = []
     for r in MOUNT_MAP.get(cluster_name, []):
@@ -292,6 +331,9 @@ def find_job_logs_on_mount(cluster_name, job_id):
     (which is too slow over sshfs). Scans top-level nemo-run subdirs,
     and for each checks at most 3 levels deep for sbatch scripts.
     """
+    if cluster_name != "local" and not _is_cluster_mount_ok(cluster_name):
+        return None
+
     roots = mounted_roots(cluster_name)
     if not roots:
         return None

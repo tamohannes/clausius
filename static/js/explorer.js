@@ -1,6 +1,7 @@
 // ── File Explorer ──
 let _expCluster = null, _expJobId = null, _expPath = null;
-let _expPage = 0, _expTotalPages = 1, _expTotalLines = 0;
+let _expTopPage = 0, _expBottomPage = 0, _expTotalPages = 1, _expTotalLines = 0;
+let _expIsLoading = false, _expFullLoaded = false;
 let _expView = 'formatted';
 let _expRawContent = '';
 
@@ -8,8 +9,12 @@ function openExplorer(cluster, jobId, path, filename) {
   _expCluster = cluster;
   _expJobId = jobId;
   _expPath = path;
-  _expPage = 0;
+  _expTopPage = 0;
+  _expBottomPage = 0;
+  _expIsLoading = false;
+  _expFullLoaded = false;
   _expView = 'formatted';
+  _expRawContent = '';
   closeModalDirect();
 
   document.getElementById('exp-filename').textContent = filename || path.split('/').pop();
@@ -28,7 +33,82 @@ function openExplorer(cluster, jobId, path, filename) {
   } else {
     _loadExplorerPage(0);
   }
+
+  _loadExplorerTree();
 }
+
+async function _loadExplorerTree() {
+  const tree = document.getElementById('exp-tree-pane');
+  tree.innerHTML = '<div class="tree-loading">loading…</div>';
+  
+  _exCluster = _expCluster;
+  _exJobId = _expJobId;
+
+  try {
+    const res = await fetchWithTimeout(`/api/log_files/${_expCluster}/${_expJobId}?include_first=0`);
+    const data = await res.json();
+    
+    if (data.error) {
+      tree.innerHTML = `<div class="tree-loading" style="color:var(--muted)">${data.error}</div>`;
+      return;
+    }
+    
+    tree.innerHTML = '';
+    const files = (data.files || []).filter(f => f.path);
+    const dirs  = data.dirs || [];
+    
+    const onFileClick = (path) => {
+      _expPath = path;
+      _expPage = 0;
+      _expRawContent = '';
+      document.getElementById('exp-filename').textContent = path.split('/').pop();
+      setExpView('formatted');
+    };
+    
+    if (files.length) {
+      tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
+        name: f.label, path: f.path, is_dir: false,
+        icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄'
+      })), true, null, onFileClick));
+    }
+    for (const dir of dirs) {
+      tree.appendChild(makeTreeSection('📁 ' + dir.label, [], false, dir.path, onFileClick));
+    }
+    if (!files.length && dirs.length) {
+      await expandDir(dirs[0].path, tree.querySelector('.tree-items'), 0, onFileClick);
+    }
+  } catch (e) {
+    tree.innerHTML = '<div class="tree-loading" style="color:var(--muted)">unavailable</div>';
+  }
+}
+
+let _isResizingExpTree = false;
+function setupExpTreeResizer() {
+  const splitter = document.getElementById('exp-tree-splitter');
+  const pane = document.getElementById('exp-tree-pane');
+  if (!splitter || !pane) return;
+
+  splitter.addEventListener('mousedown', (e) => {
+    _isResizingExpTree = true;
+    e.preventDefault();
+  });
+
+  window.addEventListener('mousemove', (e) => {
+    if (!_isResizingExpTree) return;
+    const rect = document.getElementById('explorer-page').getBoundingClientRect();
+    const minW = 180;
+    const maxW = Math.max(420, rect.width * 0.65);
+    let next = e.clientX - rect.left;
+    if (next < minW) next = minW;
+    if (next > maxW) next = maxW;
+    pane.style.width = `${next}px`;
+  });
+
+  window.addEventListener('mouseup', () => {
+    _isResizingExpTree = false;
+  });
+}
+document.addEventListener('DOMContentLoaded', setupExpTreeResizer);
 
 function closeExplorer() {
   document.getElementById('explorer-page').classList.remove('open');
@@ -43,48 +123,131 @@ function setExpView(mode) {
   const isJsonl = /\.jsonl(?:-async)?$/i.test(_expPath);
   if (isJsonl && mode === 'formatted') {
     _loadExplorerJsonl();
-  } else if (mode === 'raw' && _expRawContent) {
-    _renderExpRaw(_expRawContent);
+  } else if (_expRawContent) {
+    if (mode === 'raw') {
+      _renderExpRaw(_expRawContent);
+    } else {
+      const rendered = renderFileContentByType(_expPath, _expRawContent);
+      const el = document.getElementById('exp-content');
+      el.className = 'explorer-content';
+      el.innerHTML = '';
+      const wrapper = document.createElement('div');
+      wrapper.className = rendered.cls;
+      wrapper.innerHTML = rendered.html;
+      el.appendChild(wrapper);
+    }
   } else {
-    _loadExplorerPage(_expPage);
+    _loadExplorerPage(-1);
   }
 }
 
-async function _loadExplorerPage(page) {
+async function _loadExplorerPage(targetPage, prepend = false, loadFull = false) {
+  if (_expIsLoading) return;
+  _expIsLoading = true;
+
   const el = document.getElementById('exp-content');
-  el.className = 'explorer-content';
-  el.innerHTML = '<div class="log-loading">Loading…</div>';
+  if (!prepend) {
+    el.className = 'explorer-content';
+    el.innerHTML = '<div class="log-loading">Loading…</div>';
+  } else {
+    const loader = document.createElement('div');
+    loader.className = 'log-loading';
+    loader.id = 'exp-prepend-loader';
+    loader.textContent = 'Loading earlier part…';
+    el.insertBefore(loader, el.firstChild);
+  }
+
+  let pageSize = loadFull ? 1000000 : 500;
+  let reqPage = targetPage < 0 ? 999999 : targetPage;
 
   try {
-    const res = await fetch(`/api/log_full/${_expCluster}/${_expJobId}?path=${encodeURIComponent(_expPath)}&page=${page}&page_size=500`);
+    const res = await fetch(`/api/log_full/${_expCluster}/${_expJobId}?path=${encodeURIComponent(_expPath)}&page=${reqPage}&page_size=${pageSize}`);
     const d = await res.json();
     if (d.status !== 'ok') {
-      el.innerHTML = `<div class="log-loading" style="color:var(--red)">${d.error || 'Failed'}</div>`;
+      if (!prepend) el.innerHTML = `<div class="log-loading" style="color:var(--red)">${d.error || 'Failed'}</div>`;
+      else document.getElementById('exp-prepend-loader')?.remove();
+      _expIsLoading = false;
       return;
     }
-    _expPage = d.page;
+    
+    if (loadFull) {
+        _expTopPage = 0;
+        _expBottomPage = d.total_pages - 1;
+        _expFullLoaded = true;
+        _expRawContent = d.content;
+    } else if (!prepend) {
+        _expTopPage = d.page;
+        _expBottomPage = d.page;
+        _expFullLoaded = d.total_pages <= 1;
+        _expRawContent = d.content;
+    } else {
+        _expTopPage = d.page;
+        _expRawContent = d.content + '\n' + _expRawContent;
+        if (_expTopPage === 0) _expFullLoaded = true;
+    }
+
     _expTotalPages = d.total_pages;
     _expTotalLines = d.total_lines;
-    _expRawContent = d.content;
 
     document.getElementById('exp-source').textContent = `source: ${d.source}`;
     document.getElementById('exp-source').className = `source-pill ${d.source}`;
 
+    const oldScrollHeight = el.scrollHeight;
+    const oldScrollTop = el.scrollTop;
+
     if (_expView === 'raw') {
-      _renderExpRaw(d.content);
+      _renderExpRaw(_expRawContent);
     } else {
-      const rendered = renderFileContentByType(_expPath, d.content);
-      el.className = 'explorer-content';
-      const wrapper = document.createElement('div');
-      wrapper.className = rendered.cls;
-      wrapper.innerHTML = rendered.html;
-      el.innerHTML = '';
-      el.appendChild(wrapper);
+      if (!prepend || loadFull) {
+        const rendered = renderFileContentByType(_expPath, _expRawContent);
+        el.className = 'explorer-content';
+        el.innerHTML = '';
+        const wrapper = document.createElement('div');
+        wrapper.className = rendered.cls;
+        wrapper.innerHTML = rendered.html;
+        el.appendChild(wrapper);
+      } else {
+        document.getElementById('exp-prepend-loader')?.remove();
+        const rendered = renderFileContentByType(_expPath, _expRawContent);
+        el.className = 'explorer-content';
+        el.innerHTML = '';
+        const wrapper = document.createElement('div');
+        wrapper.className = rendered.cls;
+        wrapper.innerHTML = rendered.html;
+        el.appendChild(wrapper);
+      }
     }
-    _renderExpPagination();
+
+    if (prepend && !loadFull) {
+      el.scrollTop = oldScrollTop + (el.scrollHeight - oldScrollHeight);
+    } else if (!prepend && !loadFull && targetPage < 0) {
+      // initial load from bottom
+      el.scrollTop = el.scrollHeight;
+    }
+
+    _renderExpToolbar();
+    
+    if (!loadFull && !_expFullLoaded) {
+        _setupExplorerScroll();
+    } else {
+        el.onscroll = null;
+    }
   } catch (e) {
-    el.innerHTML = `<div class="log-loading" style="color:var(--red)">Failed: ${e}</div>`;
+    if (!prepend) el.innerHTML = `<div class="log-loading" style="color:var(--red)">Failed: ${e}</div>`;
+    else document.getElementById('exp-prepend-loader')?.remove();
   }
+  
+  _expIsLoading = false;
+}
+
+function _setupExplorerScroll() {
+  const el = document.getElementById('exp-content');
+  el.onscroll = () => {
+    if (_expIsLoading || _expFullLoaded || _expTopPage <= 0) return;
+    if (el.scrollTop < 100) {
+      _loadExplorerPage(_expTopPage - 1, true, false);
+    }
+  };
 }
 
 async function _loadExplorerJsonl() {
@@ -103,7 +266,7 @@ async function _loadExplorerJsonl() {
     document.getElementById('exp-source').className = `source-pill ${data.source}`;
     el.innerHTML = renderJsonlLazyViewer(data, _expPath);
     document.getElementById('exp-pagination').innerHTML =
-      `<span>${data.total || data.count} records</span>`;
+      `<span style="margin-right:8px;font-size:10px">${data.total || data.count} records</span>`;
   } catch (e) {
     el.innerHTML = `<div class="log-loading" style="color:var(--red)">Failed: ${e}</div>`;
   }
@@ -113,26 +276,22 @@ function _renderExpRaw(content) {
   const el = document.getElementById('exp-content');
   el.className = 'explorer-content';
   const lines = content.split('\n');
-  const startLine = _expPage * 500 + 1;
+  const startLine = _expTopPage * 500 + 1;
   const gutter = lines.map((_, i) => `<div>${startLine + i}</div>`).join('');
   const code = escapeHtml(content);
   el.innerHTML = `<div class="ide-raw"><div class="ide-gutter">${gutter}</div><div class="ide-code">${code}</div></div>`;
-  _renderExpPagination();
+  _renderExpToolbar();
 }
 
-function _renderExpPagination() {
+function _renderExpToolbar() {
   const pag = document.getElementById('exp-pagination');
-  if (_expTotalPages <= 1) {
+  if (_expTotalPages <= 1 || _expFullLoaded) {
     pag.innerHTML = `<span>${_expTotalLines} lines</span>`;
     return;
   }
   pag.innerHTML = `
-    <button onclick="_loadExplorerPage(0)" ${_expPage === 0 ? 'disabled' : ''}>first</button>
-    <button onclick="_loadExplorerPage(${_expPage - 1})" ${_expPage === 0 ? 'disabled' : ''}>← prev</button>
-    <span>${_expPage + 1} / ${_expTotalPages}</span>
-    <button onclick="_loadExplorerPage(${_expPage + 1})" ${_expPage >= _expTotalPages - 1 ? 'disabled' : ''}>next →</button>
-    <button onclick="_loadExplorerPage(${_expTotalPages - 1})" ${_expPage >= _expTotalPages - 1 ? 'disabled' : ''}>last</button>
-    <span style="font-size:10px">${_expTotalLines} lines</span>
+    <span style="margin-right:8px;font-size:10px">${_expTotalLines} lines</span>
+    <button onclick="_loadExplorerPage(0, false, true)" title="Load entire file from the beginning" class="btn">load full file</button>
   `;
 }
 

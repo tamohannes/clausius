@@ -101,7 +101,7 @@ async function openLog(cluster, jobId, jobName, force) {
   }
 }
 
-function makeTreeSection(label, items, startOpen, dirPath) {
+function makeTreeSection(label, items, startOpen, dirPath, onFileClick) {
   const section = document.createElement('div');
   section.className = 'tree-section';
 
@@ -119,7 +119,7 @@ function makeTreeSection(label, items, startOpen, dirPath) {
   section.appendChild(itemsEl);
 
   if (items.length) {
-    renderTreeItems(itemsEl, items);
+    renderTreeItems(itemsEl, items, 0, onFileClick);
   } else if (dirPath) {
     itemsEl.dataset.dirPath = dirPath;
     itemsEl.innerHTML = '<div class="tree-loading">click to load…</div>';
@@ -130,14 +130,14 @@ function makeTreeSection(label, items, startOpen, dirPath) {
     chevron.classList.toggle('open', open);
     if (open && dirPath) {
       // Always re-fetch on open (clear stale "(empty)" state).
-      await expandDir(dirPath, itemsEl);
+      await expandDir(dirPath, itemsEl, 0, onFileClick);
     }
   });
 
   return section;
 }
 
-function renderTreeItems(container, items, depth) {
+function renderTreeItems(container, items, depth, onFileClick) {
   depth = depth || 0;
   container.innerHTML = '';
   for (const item of items) {
@@ -203,7 +203,7 @@ function renderTreeItems(container, items, depth) {
         const isOpen = subContainer.classList.toggle('open');
         icon.textContent = isOpen ? '📂' : '📁';
         if (isOpen) {
-          await expandDir(item.path, subContainer, depth + 1);
+          await expandDir(item.path, subContainer, depth + 1, onFileClick);
         }
       });
 
@@ -216,18 +216,22 @@ function renderTreeItems(container, items, depth) {
       el.addEventListener('click', async () => {
         document.querySelectorAll('.tree-item.active').forEach(e => e.classList.remove('active'));
         el.classList.add('active');
-        await viewFile(item.path);
+        if (onFileClick) {
+          await onFileClick(item.path);
+        } else {
+          await viewFile(item.path);
+        }
       });
       container.appendChild(el);
     }
   }
 }
 
-async function expandDir(path, container, depth) {
+async function expandDir(path, container, depth, onFileClick) {
   const cacheKey = `${_exCluster}:${path}`;
   const cached = _treeState[cacheKey];
   if (cached && (Date.now() - cached.ts) < TREE_CACHE_TTL_MS) {
-    renderTreeItems(container, cached.items, depth || 0);
+    renderTreeItems(container, cached.items, depth || 0, onFileClick);
     return;
   }
 
@@ -248,7 +252,7 @@ async function expandDir(path, container, depth) {
       icon: e.is_dir ? '📁' : guessIcon(e.name)
     }));
     _treeState[cacheKey] = { ts: Date.now(), items };
-    renderTreeItems(container, items, depth || 0);
+    renderTreeItems(container, items, depth || 0, onFileClick);
   } catch (e) {
     container.innerHTML = `<div class="tree-loading" style="color:var(--red)">Error: ${e}</div>`;
   }

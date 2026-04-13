@@ -288,17 +288,23 @@
         </div>
         <span class="source-pill" id="exp-source">source: —</span>
       </div>
-      <div class="explorer-toolbar">
-        <div class="explorer-toolbar-left">
-          <div class="exp-view-tabs">
-            <button class="exp-view-tab active" id="exp-tab-formatted" onclick="setExpView('formatted')">Formatted</button>
-            <button class="exp-view-tab" id="exp-tab-raw" onclick="setExpView('raw')">Raw</button>
+      <div class="explorer">
+        <div class="tree-pane" id="exp-tree-pane"></div>
+        <div class="tree-splitter" id="exp-tree-splitter" title="Drag to resize"></div>
+        <div class="content-pane">
+          <div class="explorer-toolbar">
+            <div class="explorer-toolbar-left">
+              <div class="exp-view-tabs">
+                <button class="exp-view-tab active" id="exp-tab-formatted" onclick="setExpView('formatted')">Formatted</button>
+                <button class="exp-view-tab" id="exp-tab-raw" onclick="setExpView('raw')">Raw</button>
+              </div>
+            </div>
+            <div class="explorer-toolbar-right" id="exp-pagination"></div>
+          </div>
+          <div class="explorer-content" id="exp-content">
+            <div class="placeholder">select a file to explore</div>
           </div>
         </div>
-        <div class="explorer-toolbar-right" id="exp-pagination"></div>
-      </div>
-      <div class="explorer-content" id="exp-content">
-        <div class="placeholder">select a file to explore</div>
       </div>
     </div>
   </div>

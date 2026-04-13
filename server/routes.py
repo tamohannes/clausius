@@ -144,7 +144,7 @@ def api_jobs():
         has_running = any(j.get("state") in ("RUNNING", "COMPLETING") for j in jobs if not j.get("_pinned"))
         has_pending = any(j.get("state") == "PENDING" for j in jobs if not j.get("_pinned"))
         has_live = any(not j.get("_pinned") for j in jobs)
-        return (not has_running, not has_pending, not has_live, name)
+        return (name == "local", not has_running, not has_pending, not has_live, name)
 
     ordered = dict(sorted(snapshot.items(), key=cluster_sort_key))
 
