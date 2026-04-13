@@ -487,30 +487,41 @@ async function cancelJob(cluster, jobId) {
   if (!confirm(`Cancel job ${jobId} on ${cluster}?`)) return;
   const t = toastLoading(`Cancelling ${jobId}…`);
   try {
-    const res = await fetchWithTimeout(`/api/cancel/${cluster}/${jobId}`, { method: 'POST' }, 8000);
+    const res = await fetchWithTimeout(`/api/cancel/${cluster}/${jobId}`, { method: 'POST' }, 15000);
     const d = await res.json();
     if (d.status === 'ok') { t.done(`Cancelled ${jobId}`); }
     else { t.done(d.error, 'error'); return; }
   } catch { t.done('Cancel failed', 'error'); return; }
-  setTimeout(() => refreshCluster(cluster, true), 1500);
+  refreshCluster(cluster, true);
 }
 
 async function cancelGroup(cluster, jobIdsJson, groupName) {
   const jobIds = JSON.parse(jobIdsJson);
+  return _doCancelGroup(cluster, jobIds, groupName);
+}
+
+async function cancelGroupByKey(cancelKey, groupName) {
+  const ids = (window._cancelGroupIds || {})[cancelKey];
+  if (!ids || !ids.length) { alert('No jobs to cancel'); return; }
+  const cluster = cancelKey.split(':')[0];
+  return _doCancelGroup(cluster, ids, groupName);
+}
+
+async function _doCancelGroup(cluster, jobIds, groupName) {
   if (!confirm(`Cancel ${jobIds.length} job${jobIds.length !== 1 ? 's' : ''} in "${groupName}" on ${cluster}?`)) return;
-  const t = toastLoading(`Cancelling ${jobIds.length} jobs…`);
+  const t = toastLoading(`Cancelling ${jobIds.length} job${jobIds.length !== 1 ? 's' : ''}…`);
   try {
     const res = await fetchWithTimeout(`/api/cancel_jobs/${cluster}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ job_ids: jobIds }),
-    }, 8000);
+    }, 30000);
     const d = await res.json();
-    if (d.status === 'ok') { t.done(`Cancelled ${d.cancelled} jobs in ${groupName}`); }
+    if (d.status === 'ok') { t.done(`Cancelling ${d.cancelled} job${d.cancelled !== 1 ? 's' : ''} in ${groupName}`); }
     else if (d.status === 'partial') { t.done(`Cancelled ${d.cancelled} jobs, ${d.errors.length} failed`, 'error'); }
     else { t.done(d.error, 'error'); return; }
   } catch { t.done('Cancel group failed', 'error'); return; }
-  setTimeout(() => refreshCluster(cluster, true), 1500);
+  refreshCluster(cluster, true);
 }
 
 
@@ -820,7 +831,13 @@ async function saveGpuAllocations() {
       body: JSON.stringify({ team_gpu_allocations }),
     });
     const d = await res.json();
-    if (d.status === 'ok') toast('GPU allocations saved');
+    if (d.status === 'ok') {
+      toast('GPU allocations saved');
+      _teamGpuAlloc = team_gpu_allocations;
+      if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
+        refreshPppAllocations(true);
+      }
+    }
     else toast(d.error || 'Save failed', 'error');
   } catch { toast('Save failed', 'error'); }
 }
@@ -862,9 +879,13 @@ async function saveProfile() {
     const d = await res.json();
     if (d.status === 'ok') {
       toast('Profile saved');
+      _teamGpuAlloc = team_gpu_allocations;
       _storageQuota = {};
       fetchStorageQuotas().then(() => { if (Object.keys(allData).length) _renderAll(); });
       fetchClusterUtilization().then(() => { if (Object.keys(allData).length) _renderAll(); });
+      if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
+        refreshPppAllocations(true);
+      }
     } else {
       toast(d.error || 'Save failed', 'error');
     }

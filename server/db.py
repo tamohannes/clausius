@@ -305,6 +305,23 @@ def init_db():
     con.close()
 
 
+def _resolve_board_visible(cluster, state, current_visible, terminal=False, set_board_visible=None):
+    """Decide whether a job should stay pinned on the board.
+
+    Only genuinely terminal states should be pinned through the terminal=True
+    path. This prevents a disappeared job from being reinserted as pinned
+    PENDING/RUNNING when sacct lags behind squeue.
+    """
+    state_upper = str(state or "").upper()
+    if cluster == "local":
+        return 0
+    if set_board_visible is not None:
+        return set_board_visible
+    if terminal:
+        return 1 if state_upper in PINNABLE_TERMINAL_STATES else 0
+    return current_visible if current_visible is not None else 0
+
+
 def upsert_job(cluster, job, terminal=False, set_board_visible=None):
     con = get_db()
     row = con.execute(
@@ -312,15 +329,13 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
         (cluster, job["jobid"])
     ).fetchone()
     current_visible = row["board_visible"] if row else None
-
-    if cluster == "local":
-        bv = 0
-    elif set_board_visible is not None:
-        bv = set_board_visible
-    elif terminal:
-        bv = 1
-    else:
-        bv = current_visible if current_visible is not None else 0
+    bv = _resolve_board_visible(
+        cluster,
+        job.get("state"),
+        current_visible,
+        terminal=terminal,
+        set_board_visible=set_board_visible,
+    )
 
     dep_raw = job.get("dependency", "")
     if dep_raw in ("(null)", "None", None):
@@ -374,7 +389,7 @@ def upsert_job(cluster, job, terminal=False, set_board_visible=None):
     ))
     con.commit()
     con.close()
-    if terminal:
+    if terminal or set_board_visible is not None:
         invalidate_pinned_cache(cluster)
 
 
@@ -397,12 +412,12 @@ def upsert_jobs_batch(cluster, jobs, terminal=False):
     for job in jobs:
         jid = job["jobid"]
         current_visible = existing_bv.get(jid)
-        if cluster == "local":
-            bv = 0
-        elif terminal:
-            bv = 1
-        else:
-            bv = current_visible if current_visible is not None else 0
+        bv = _resolve_board_visible(
+            cluster,
+            job.get("state"),
+            current_visible,
+            terminal=terminal,
+        )
 
         dep_raw = job.get("dependency", "")
         if dep_raw in ("(null)", "None", None):
@@ -453,6 +468,8 @@ def upsert_jobs_batch(cluster, jobs, terminal=False):
     """, params)
     con.commit()
     con.close()
+    if terminal:
+        invalidate_pinned_cache(cluster)
 
 
 def upsert_history(cluster, job):

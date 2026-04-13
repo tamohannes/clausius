@@ -104,6 +104,7 @@ def client(app):
 def _reset_caches():
     """Clear all in-memory caches between tests."""
     from server import config
+    from server import db
     with config._cache_lock:
         config._cache.clear()
         config._seen_jobs.clear()
@@ -116,6 +117,9 @@ def _reset_caches():
         config._progress_cache.clear()
         config._est_start_cache.clear()
         config._prefetch_last.clear()
+    with db._pinned_cache_lock:
+        db._pinned_cache.clear()
+        db._pinned_cache_ts.clear()
     yield
 
 

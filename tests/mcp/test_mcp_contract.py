@@ -208,7 +208,7 @@ class TestGetHistory:
 @pytest.mark.mcp
 class TestCancelJob:
     def test_success(self):
-        with patch.object(mcp_server, "ssh_run_with_timeout", return_value=("", "")), \
+        with patch.object(mcp_server, "cancel_jobs_with_report", return_value={"cancelled_ids": ["123"], "errors": []}), \
              patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
             result = cancel_job("c1", "123")
         assert result["status"] == "ok"
@@ -218,7 +218,11 @@ class TestCancelJob:
         assert result["status"] == "error"
 
     def test_ssh_error(self):
-        with patch.object(mcp_server, "ssh_run_with_timeout", side_effect=RuntimeError("refused")), \
+        with patch.object(
+            mcp_server,
+            "cancel_jobs_with_report",
+            return_value={"cancelled_ids": [], "errors": [{"job_id": "123", "error": "refused", "exit_code": None}]},
+        ), \
              patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
             result = cancel_job("c1", "123")
         assert result["status"] == "error"
@@ -236,11 +240,32 @@ class TestCancelJob:
 @pytest.mark.mcp
 class TestCancelJobs:
     def test_batch_success(self):
-        with patch.object(mcp_server, "ssh_run_with_timeout", return_value=("", "")), \
+        with patch.object(
+            mcp_server,
+            "cancel_jobs_with_report",
+            return_value={"cancelled_ids": ["100", "200", "300"], "errors": []},
+        ), \
              patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
             result = cancel_jobs("c1", ["100", "200", "300"])
         assert result["status"] == "ok"
         assert result["cancelled"] == 3
+
+    def test_batch_partial(self):
+        with patch.object(
+            mcp_server,
+            "cancel_jobs_with_report",
+            return_value={
+                "cancelled_ids": ["100"],
+                "errors": [{"job_id": "200", "error": "already gone", "exit_code": 1}],
+            },
+        ), \
+             patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
+            result = cancel_jobs("c1", ["100", "200"])
+        assert result["status"] == "partial"
+        assert result["cancelled"] == 1
+        assert result["cancelled_ids"] == ["100"]
+        assert result["failed_ids"] == ["200"]
+        assert any("200: already gone" in err for err in result["errors"])
 
     def test_no_valid_ids(self):
         with patch.dict(mcp_server.CLUSTERS, {"c1": {}}):

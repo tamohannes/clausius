@@ -20,15 +20,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from mcp.server.fastmcp import FastMCP
 
-from server.db import init_db, get_db, get_history, get_projects, normalize_job_times_local
-from server.db import get_board_pinned, dismiss_job, dismiss_by_state_prefix, get_run_with_jobs
+from server.db import init_db, get_db, get_history, get_projects
+from server.db import dismiss_job, dismiss_by_state_prefix, get_run_with_jobs
 from server.config import (
     CLUSTERS, DEFAULT_USER, DB_PATH, TEAM_GPU_ALLOC,
-    _cache_lock, _cache, _cache_get,
-    _progress_cache, _progress_source_cache, _crash_cache, _est_start_cache,
-    PROGRESS_TTL_SEC, CRASH_TTL_SEC, EST_START_TTL_SEC,
     extract_project, extract_campaign, get_project_color, get_project_emoji, settings_response,
 )
+from server.board import build_board_snapshot, build_cluster_board_entry
 from server.logbooks import (
     list_entries as _lb_list,
     get_entry as _lb_get,
@@ -50,7 +48,7 @@ from server.mounts import (
     resolve_mounted_path,
 )
 from server.partitions import get_partitions as _get_partitions, get_all_partitions_cached, get_partition_summary
-from server.ssh import ssh_run_with_timeout
+from server.ssh import ssh_run_with_timeout, cancel_jobs_with_report
 
 init_db()
 
@@ -90,55 +88,17 @@ def _slim_job(cluster: str, job: dict) -> dict:
 
 
 def _get_all_jobs_snapshot():
-    """Return enriched job data for all clusters from the DB/cache."""
+    """Return enriched job data for all clusters from the DB (same source as UI)."""
     _ensure_ssh()
     touch_demand()
-    with _cache_lock:
-        snapshot = {k: dict(v) for k, v in _cache.items()}
-    for name in CLUSTERS:
-        if name not in snapshot:
-            snapshot[name] = {"status": "ok", "jobs": [], "updated": None}
-        data = snapshot[name]
-        if data.get("status") != "ok":
-            continue
-        for j in data.get("jobs", []):
-            j = normalize_job_times_local(j)
-            if not j.get("project"):
-                j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
-            proj = j.get("project", "")
-            if proj:
-                j["project_color"] = get_project_color(proj)
-                j["project_emoji"] = get_project_emoji(proj)
-                _jn = j.get("name") or j.get("job_name") or ""
-                j["campaign"] = extract_campaign(_jn, proj)
-    return snapshot
+    return build_board_snapshot(schedule_prefetch_active=False)
 
 
 def _get_cluster_jobs(cluster):
-    """Return enriched job data for one cluster."""
+    """Return enriched job data for one cluster (same source as UI)."""
     _ensure_ssh()
     touch_demand()
-    with _cache_lock:
-        data = dict(_cache.get(cluster, {"status": "ok", "jobs": [], "updated": None}))
-    if data.get("status") == "ok":
-        pinned = get_board_pinned(cluster)
-        live_ids = {j["jobid"] for j in data.get("jobs", [])}
-        for p in pinned:
-            if p["job_id"] not in live_ids:
-                data["jobs"] = data.get("jobs", []) + [{
-                    **p, "_pinned": True, "jobid": p["job_id"], "name": p["job_name"],
-                }]
-        data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
-        for j in data.get("jobs", []):
-            if not j.get("project"):
-                j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
-            proj = j.get("project", "")
-            if proj:
-                j["project_color"] = get_project_color(proj)
-                j["project_emoji"] = get_project_emoji(proj)
-                _jn = j.get("name") or j.get("job_name") or ""
-                j["campaign"] = extract_campaign(_jn, proj)
-    return data
+    return build_cluster_board_entry(cluster, schedule_prefetch_active=False)
 
 
 # ── tools ────────────────────────────────────────────────────────────────────
@@ -267,11 +227,11 @@ def cancel_job(cluster: str, job_id: str) -> dict:
             return {"status": "ok"}
         except Exception as e:
             return {"status": "error", "error": str(e)}
-    try:
-        ssh_run_with_timeout(cluster, f"scancel {job_id}", timeout_sec=10)
+    result = cancel_jobs_with_report(cluster, [job_id], timeout_sec=10, chunk_size=1)
+    if result["cancelled_ids"]:
         return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    error = result["errors"][0]["error"] if result["errors"] else "Cancel failed"
+    return {"status": "error", "error": error}
 
 
 @mcp.tool()
@@ -283,11 +243,18 @@ def cancel_jobs(cluster: str, job_ids: list[str]) -> dict:
     sanitized = [str(jid).strip() for jid in job_ids if str(jid).strip().isdigit()]
     if not sanitized:
         return {"status": "error", "error": "No valid job IDs"}
-    try:
-        ssh_run_with_timeout(cluster, f"scancel {' '.join(sanitized)}", timeout_sec=10)
-        return {"status": "ok", "cancelled": len(sanitized)}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    result = cancel_jobs_with_report(cluster, sanitized, timeout_sec=20, chunk_size=25)
+    cancelled = len(result["cancelled_ids"])
+    errors = [f'{err["job_id"]}: {err["error"]}' for err in result["errors"]]
+    if errors:
+        return {
+            "status": "partial",
+            "cancelled": cancelled,
+            "cancelled_ids": result["cancelled_ids"],
+            "failed_ids": [err["job_id"] for err in result["errors"]],
+            "errors": errors,
+        }
+    return {"status": "ok", "cancelled": cancelled, "cancelled_ids": result["cancelled_ids"]}
 
 
 @mcp.tool()

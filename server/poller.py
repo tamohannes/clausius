@@ -1,9 +1,11 @@
-"""Background poller — owns all periodic SSH data-fetching.
+"""Background poller for periodic live snapshot refreshes.
 
-No HTTP request should ever trigger SSH for data collection.  The poller
-cycles through clusters with adaptive scheduling: healthy clusters are
-polled every HEALTHY_INTERVAL seconds; failing clusters back off
-exponentially up to MAX_BACKOFF seconds.
+Normal board reads consume the DB-backed live snapshot.  The poller keeps
+that snapshot fresh on a schedule, while explicit manual refreshes may call
+``poll_now()`` for one bounded live fetch.
+
+Healthy clusters are polled every HEALTHY_INTERVAL seconds; failing clusters
+back off exponentially up to MAX_BACKOFF seconds.
 
 Demand-driven: the poller only runs when someone is watching.  A consumer
 (frontend /api/jobs, MCP tool call) signals demand via touch_demand().
@@ -18,6 +20,7 @@ import logging
 import queue
 import threading
 import time
+from datetime import datetime
 
 from .config import CLUSTERS
 
@@ -74,11 +77,18 @@ class Poller:
         self._priority = queue.Queue()
         self._stop = threading.Event()
         self._last_success = {}
+        self._last_duration_ms = {}
+        self._last_error = {}
+        self._last_started_at = {}
+        self._last_completed_at = {}
         self._idle = False
+        self._inflight = set()
+        self._inflight_lock = threading.Lock()
 
     def run(self):
         now = time.monotonic()
-        for i, name in enumerate(CLUSTERS):
+        remote = [n for n in CLUSTERS if n != "local"]
+        for i, name in enumerate(remote):
             self._schedules[name] = now + i * 0.5
 
         while not self._stop.is_set():
@@ -98,7 +108,8 @@ class Poller:
                 log.info("poller resumed — consumer detected")
                 self._idle = False
                 now = time.monotonic()
-                for i, name in enumerate(CLUSTERS):
+                remote = [n for n in CLUSTERS if n != "local"]
+                for i, name in enumerate(remote):
                     self._schedules[name] = now + i * 0.5
 
             cluster = self._next_due()
@@ -128,48 +139,91 @@ class Poller:
         now = time.monotonic()
         best, best_at = None, float("inf")
         for name, at in self._schedules.items():
-            if name not in CLUSTERS:
+            if name not in CLUSTERS or name == "local":
                 continue
             if at <= now and at < best_at:
                 best, best_at = name, at
         return best
 
-    POLL_TIMEOUT = 45
+    def _claim_inflight(self, name):
+        with self._inflight_lock:
+            if name in self._inflight:
+                return False
+            self._inflight.add(name)
+            return True
 
-    def _poll_one(self, name):
+    def _release_inflight(self, name):
+        with self._inflight_lock:
+            self._inflight.discard(name)
+
+    def _record_poll_success(self, name, duration_ms):
+        self._failures.pop(name, None)
+        self._last_error.pop(name, None)
+        self._last_success[name] = time.monotonic()
+        self._last_duration_ms[name] = duration_ms
+        self._last_completed_at[name] = datetime.now().isoformat(timespec="seconds")
+        self._reschedule(name, self.HEALTHY_INTERVAL)
+
+    def _record_poll_failure(self, name, duration_ms, error):
+        count = self._failures.get(name, 0) + 1
+        self._failures[name] = min(count, 10)
+        delay = min(self.HEALTHY_INTERVAL * (2 ** count), self.MAX_BACKOFF)
+        self._last_error[name] = str(error)
+        self._last_duration_ms[name] = duration_ms
+        self._last_completed_at[name] = datetime.now().isoformat(timespec="seconds")
+        self._reschedule(name, delay)
+        log.warning("poll %s failed (#%d), backoff %ds: %s",
+                    name, count, delay, error)
+
+    def _run_poll(self, name):
         from .jobs import poll_cluster
-        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
+        if name == "local":
+            self._reschedule(name, 60)
+            return {"status": "ok", "cluster": name, "duration_ms": 0, "changed": False}
+
+        if not self._claim_inflight(name):
+            return {"status": "busy", "cluster": name, "changed": False}
+
+        started_mono = time.monotonic()
+        self._last_started_at[name] = datetime.now().isoformat(timespec="seconds")
         try:
             prev_data = self._snapshot_ids(name)
-
-            with ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"poll-{name}") as pool:
-                fut = pool.submit(poll_cluster, name)
-                try:
-                    fut.result(timeout=self.POLL_TIMEOUT)
-                except FuturesTimeout:
-                    log.warning("poll %s timed out after %ds, moving on",
-                                name, self.POLL_TIMEOUT)
-                    raise TimeoutError(f"poll {name} exceeded {self.POLL_TIMEOUT}s")
-
+            result = poll_cluster(name) or {"status": "ok", "cluster": name}
             curr_data = self._snapshot_ids(name)
-
             changed = prev_data != curr_data
-            if changed:
-                bump_version()
-                log.debug("poll %s: data changed (v%d)", name, get_version())
+            duration_ms = round((time.monotonic() - started_mono) * 1000)
+            result["duration_ms"] = duration_ms
+            result["changed"] = changed
 
-            self._failures.pop(name, None)
-            self._last_success[name] = time.monotonic()
-            self._reschedule(name, self.HEALTHY_INTERVAL)
+            if result.get("status") == "ok":
+                if changed:
+                    bump_version()
+                    log.debug("poll %s: data changed (v%d)", name, get_version())
+                self._record_poll_success(name, duration_ms)
+                return result
 
+            self._record_poll_failure(name, duration_ms, result.get("error", "poll failed"))
+            return result
         except Exception as e:
-            count = self._failures.get(name, 0) + 1
-            self._failures[name] = min(count, 10)
-            delay = min(self.HEALTHY_INTERVAL * (2 ** count), self.MAX_BACKOFF)
-            self._reschedule(name, delay)
-            log.warning("poll %s failed (#%d), backoff %ds: %s",
-                        name, count, delay, e)
+            duration_ms = round((time.monotonic() - started_mono) * 1000)
+            self._record_poll_failure(name, duration_ms, e)
+            return {
+                "status": "error",
+                "cluster": name,
+                "error": str(e),
+                "duration_ms": duration_ms,
+                "changed": False,
+            }
+        finally:
+            self._release_inflight(name)
+
+    def _poll_one(self, name):
+        self._run_poll(name)
+
+    def poll_now(self, cluster):
+        """Run one bounded live poll immediately for explicit user refreshes."""
+        return self._run_poll(cluster)
 
     def _snapshot_ids(self, name):
         """Return a hashable snapshot of the current cached job state."""
@@ -214,9 +268,19 @@ class Poller:
 
             out[name] = {
                 "state": state,
+                "inflight": name in self._inflight,
                 "failure_count": failures,
                 "next_poll_sec": max(0, round(next_at - now, 1)),
                 "staleness_sec": staleness,
+                "last_duration_ms": self._last_duration_ms.get(name),
+                "last_error": self._last_error.get(name),
+                "last_started_at": self._last_started_at.get(name),
+                "last_completed_at": self._last_completed_at.get(name),
+                "view_state": (
+                    "stale" if staleness is not None and staleness > 60
+                    else "degraded" if failures
+                    else "live"
+                ),
             }
         return out
 

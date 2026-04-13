@@ -475,6 +475,12 @@ main { padding: 14px 16px 40px; }
 
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.25} }
 
+.card-freshness-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
 .freshness-badge {
   font-size: 9px;
   font-weight: 600;
@@ -482,7 +488,6 @@ main { padding: 14px 16px 40px; }
   padding: 2px 5px;
   border-radius: 4px;
   line-height: 1.2;
-  margin-left: auto;
   white-space: nowrap;
 }
 .freshness-badge.fresh { color: var(--green); background: rgba(76,175,80,0.08); }

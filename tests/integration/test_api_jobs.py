@@ -16,6 +16,13 @@ class TestApiJobs:
         resp = client.get("/api/jobs?refresh=1")
         assert resp.status_code == 200
 
+    def test_get_jobs_honors_etag(self, client, mock_ssh):
+        first = client.get("/api/jobs")
+        assert first.status_code == 200
+        etag = first.headers.get("ETag")
+        second = client.get("/api/jobs", headers={"If-None-Match": etag})
+        assert second.status_code == 304
+
     def test_get_jobs_cluster_unknown(self, client, mock_ssh):
         resp = client.get("/api/jobs/nonexistent")
         assert resp.status_code == 404
@@ -54,6 +61,23 @@ class TestApiJobs:
         if mock_cluster in data and data[mock_cluster].get("status") == "ok":
             assert "mount" in data[mock_cluster]
 
+    def test_force_poll_runs_immediately(self, client, monkeypatch, mock_cluster):
+        class _Poller:
+            def poll_now(self, cluster):
+                assert cluster == mock_cluster
+                return {"status": "ok", "cluster": cluster, "duration_ms": 12, "changed": True}
+
+            def get_status(self):
+                return {mock_cluster: {"state": "healthy"}}
+
+        monkeypatch.setattr("server.routes.get_poller", lambda: _Poller())
+
+        resp = client.post(f"/api/force_poll/{mock_cluster}")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "ok"
+        assert data["cluster"] == mock_cluster
+
 
 @pytest.mark.integration
 class TestApiPrefetchVisible:
@@ -79,3 +103,16 @@ class TestApiPrefetchVisible:
                            data=json.dumps(payload),
                            content_type="application/json")
         assert resp.get_json()["jobs"] == 0
+
+
+@pytest.mark.integration
+class TestApiProgress:
+    def test_progress_response_includes_board_version(self, client, mock_ssh):
+        resp = client.post(
+            "/api/progress",
+            data=json.dumps({"jobs": []}),
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "board_version" in data

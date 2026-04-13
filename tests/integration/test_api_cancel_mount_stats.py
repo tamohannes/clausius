@@ -11,10 +11,24 @@ class TestApiCancel:
         assert resp.status_code == 404
 
     def test_remote_cancel_ok(self, client, mock_ssh, mock_cluster):
-        mock_ssh.set(mock_cluster, "scancel", ("", ""))
+        mock_ssh.set(mock_cluster, "scancel", ("__CLAUSIUS_CANCEL__:OK:12345\n", ""))
         resp = client.post(f"/api/cancel/{mock_cluster}/12345")
         data = resp.get_json()
         assert data["status"] == "ok"
+
+    def test_remote_cancel_jobs_partial(self, client, mock_ssh, mock_cluster):
+        mock_ssh.set(
+            mock_cluster,
+            "scancel",
+            ("__CLAUSIUS_CANCEL__:OK:100\n__CLAUSIUS_CANCEL__:ERR:200:1:already gone\n", ""),
+        )
+        resp = client.post(f"/api/cancel_jobs/{mock_cluster}", json={"job_ids": ["100", "200"]})
+        data = resp.get_json()
+        assert data["status"] == "partial"
+        assert data["cancelled"] == 1
+        assert data["cancelled_ids"] == ["100"]
+        assert data["failed_ids"] == ["200"]
+        assert any("200: already gone" in err for err in data["errors"])
 
     def test_local_cancel_invalid_pid(self, client, mock_ssh):
         resp = client.post("/api/cancel/local/99999999")

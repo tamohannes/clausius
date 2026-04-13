@@ -35,6 +35,19 @@ class TestUpsertJob:
         assert row["board_visible"] == 1
 
     @pytest.mark.unit
+    def test_nonterminal_terminal_upsert_clears_stale_pin(self, fresh_db):
+        job = {"jobid": "100", "name": "eval-math", "state": "FAILED"}
+        upsert_job("test-cluster", job, terminal=True)
+        upsert_job("test-cluster", {**job, "state": "PENDING"}, terminal=True)
+        con = get_db()
+        row = con.execute(
+            "SELECT state, board_visible FROM job_history WHERE job_id='100'"
+        ).fetchone()
+        con.close()
+        assert row["state"] == "PENDING"
+        assert row["board_visible"] == 0
+
+    @pytest.mark.unit
     def test_terminal_pins_even_after_regular_upsert(self, fresh_db):
         """Job polled as RUNNING (board_visible=0), then finalized → must be pinned."""
         job = {"jobid": "100", "name": "eval-math", "state": "RUNNING"}

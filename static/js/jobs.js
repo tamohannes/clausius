@@ -32,7 +32,7 @@ function _renderErrorBanner() {
 
 
 function _persistAllData() {
-  try { sessionStorage.setItem('clausius.allData', JSON.stringify(allData)); } catch (_) {}
+  return;
 }
 
 
@@ -378,11 +378,15 @@ function renderMountPanel(data) {
 function computeRefreshIntervalSec(data) {
   for (const [, d] of Object.entries(data || {})) {
     for (const j of d.jobs || []) {
-      const s = (j.state || '').toUpperCase();
-      if (s === 'RUNNING' || s === 'PENDING' || s === 'COMPLETING') return 30;
+      if (_isActivelyCancelableState(j.state)) return 30;
     }
   }
   return 60;
+}
+
+function _isActivelyCancelableState(state) {
+  const s = (state || '').toUpperCase();
+  return s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING';
 }
 
 // ── Cluster card rendering ──
@@ -490,7 +494,10 @@ function renderCard(name, data) {
         : `<span class="dim">${j.nodes || '—'}n</span>`;
       const isPinned = j._pinned;
       const st = (j.state || '').toUpperCase();
-      const pinKind = isPinned ? (isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row') : '';
+      const isActivelyCancelable = _isActivelyCancelableState(st);
+      const pinKind = (isPinned && !isActivelyCancelable)
+        ? (isSoftFail(j.state, j.reason) ? 'pinned-softfail-row' : isCompletedState(st) ? 'pinned-completed-row' : 'pinned-failed-row')
+        : '';
       const depth = depthInGroup(j, byId, idSet, depthMemo);
 
       const isBackup = backupSet.has(j.jobid);
@@ -518,7 +525,7 @@ function renderCard(name, data) {
         ? `<button class="action-btn" title="Stats not available for local process mode" onclick="toast('Stats popup is for Slurm cluster jobs','error')">stats</button>`
         : `<button class="action-btn log-btn" onclick="openStats('${name}','${j.jobid}','${safeName}')">stats</button>`);
       const quickActions = `${logBtn} ${statsBtn}`;
-      const tailAction = isPinned
+      const tailAction = (isPinned && !isActivelyCancelable)
         ? `<button class="action-btn" title="dismiss" onclick="dismissFailed('${name}','${j.jobid}')">✕</button>`
         : `<button class="action-btn" onclick="cancelJob('${name}','${j.jobid}')">cancel</button>`;
 
@@ -560,10 +567,16 @@ function renderCard(name, data) {
         <td>${tailAction}</td>
       </tr>`;
       }).join('');
-      const cancelableIds = groupJobs.filter(j => !j._pinned).map(j => j.jobid);
-      const idsAttr = JSON.stringify(cancelableIds).replace(/"/g, '&quot;');
-      const cancelGroupBtn = cancelableIds.length > 1 && name !== 'local'
-        ? `<button class="action-btn cancel-group-btn" onclick="event.stopPropagation();cancelGroup('${name}','${idsAttr}','${gk.replace(/'/g, "\\'")}')">cancel group</button>`
+      const cancelableIds = [...new Set(
+        groupJobs
+          .filter(j => _isActivelyCancelableState(j.state))
+          .map(j => String(j.jobid))
+      )];
+      const cancelKey = `${name}:${rootJobId}`;
+      window._cancelGroupIds = window._cancelGroupIds || {};
+      window._cancelGroupIds[cancelKey] = cancelableIds;
+      const cancelGroupBtn = cancelableIds.length >= 1 && name !== 'local'
+        ? `<button class="action-btn cancel-group-btn" onclick="event.stopPropagation();cancelGroupByKey('${cancelKey}','${gk.replace(/'/g, "\\'")}')">cancel group</button>`
         : '';
       return `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="11"><span class="group-head-content">${groupLabel}${cancelGroupBtn}</span></td></tr>${groupRows}`;
     }).join('');
@@ -607,8 +620,7 @@ function renderCard(name, data) {
         <span class="status-indicator ${statusClass}"></span>
         <span class="job-count-text">${jobCountText}</span>
         ${mountBadge}
-        <button class="icon-btn" onclick="refreshCluster('${name}',true)" title="Refresh">↻</button>
-        ${freshBadge}
+        <span class="card-freshness-group">${freshBadge}<button class="icon-btn" onclick="refreshCluster('${name}',true)" title="Refresh">↻</button></span>
       </div>
       <div class="card-actions-row">
         ${mountBtn}
@@ -785,8 +797,7 @@ function _collectVisibleJobs(data) {
     if (!d || d.status !== 'ok') continue;
     for (const j of (d.jobs || [])) {
       const s = (j.state || '').toUpperCase();
-      if (j._pinned) continue;
-      if (s === 'RUNNING' || s === 'COMPLETING' || s === 'PENDING') {
+      if (_isActivelyCancelableState(s)) {
         jobs.push({ cluster, job_id: j.jobid, state: s });
       }
     }
@@ -821,6 +832,10 @@ async function _fetchProgressUpdate(batch) {
       body: JSON.stringify({ jobs: batch }),
     });
     const result = await res.json();
+    const overlayVersion = result.board_version != null ? String(result.board_version) : null;
+    if (_lastBoardVersion && overlayVersion && overlayVersion !== _lastBoardVersion) {
+      return;
+    }
     const progressMap = result.progress || result;
     const progressSources = result.progress_sources || {};
     const estStarts = result.est_starts || {};
@@ -835,8 +850,6 @@ async function _fetchProgressUpdate(batch) {
     let changed = false;
     for (const [key, pct] of Object.entries(progressMap)) {
       const [cluster, jobid] = key.split(':');
-      _progressCache[key] = pct;
-      if (progressSources[key]) _progressSourceCache[key] = progressSources[key];
       if (allData[cluster]) {
         for (const j of (allData[cluster].jobs || [])) {
           if (String(j.jobid) === jobid) {
@@ -857,7 +870,6 @@ async function _fetchProgressUpdate(batch) {
         }
       }
     }
-    _saveProgressCache();
     if (changed) _scheduleRender();
   } catch (_) {}
 }
@@ -889,6 +901,7 @@ function _isCacheFresh(data) {
 
 let _fetchAllRunning = false;
 let _lastEtag = null;
+let _lastBoardVersion = null;
 
 async function fetchAll() {
   if (_fetchAllRunning || document.hidden) return;
@@ -897,20 +910,6 @@ async function fetchAll() {
 }
 async function _doFetchAll() {
   const grid = document.getElementById('grid');
-
-  if (!Object.keys(allData).length) {
-    try {
-      const stored = sessionStorage.getItem('clausius.allData');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Object.values(parsed).some(d => d.updated)) {
-          allData = parsed;
-          _fillMissing();
-          _renderAll();
-        }
-      }
-    } catch (_) {}
-  }
 
   if (!grid.children.length) _showLoadingSkeleton();
 
@@ -941,6 +940,7 @@ async function _doFetchAll() {
 
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     _lastEtag = res.headers.get('ETag');
+    _lastBoardVersion = (_lastEtag || '').replace(/"/g, '');
     const fresh = await res.json();
     const hasData = Object.values(fresh).some(d => d.updated);
     if (hasData) {
@@ -949,7 +949,6 @@ async function _doFetchAll() {
       _renderAll();
       _clearErrorBannerKey('jobs');
       _clearErrorBannerKey('clusters');
-      _persistAllData();
     }
   } catch (e) {
     console.warn('Job fetch failed:', e);
@@ -972,7 +971,6 @@ async function _forceRefreshAll() {
   );
   await Promise.allSettled(promises);
   _lastEtag = null;
-  await new Promise(r => setTimeout(r, 2000));
   await _doFetchAll();
   grid.classList.remove('grid-loading');
 }
@@ -1031,12 +1029,12 @@ async function refreshCluster(name, force) {
   try {
     if (force) {
       await fetch(`/api/force_poll/${name}`, { method: 'POST' });
-      await new Promise(r => setTimeout(r, 2000));
     }
     _lastEtag = null;
     const res = await fetchWithTimeout('/api/jobs');
     if (res.ok) {
       _lastEtag = res.headers.get('ETag');
+      _lastBoardVersion = (_lastEtag || '').replace(/"/g, '');
       const fresh = await res.json();
       if (Object.values(fresh).some(d => d.updated)) {
         allData = fresh;

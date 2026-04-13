@@ -1,5 +1,6 @@
 """Job fetching, parsing, polling, prefetch, and stats."""
 
+import logging
 import os
 import re
 import subprocess
@@ -24,7 +25,7 @@ from .config import (
 )
 from .ssh import ssh_run, ssh_run_with_timeout, enable_standalone_ssh
 from .db import (
-    upsert_job, get_db, get_board_pinned,
+    upsert_job, get_db, get_board_pinned, invalidate_pinned_cache,
     upsert_run, update_run_meta, update_run_times, associate_jobs_to_run, get_run,
     upsert_jobs_batch,
     replace_live_jobs, set_cluster_state, cache_db_put,
@@ -34,11 +35,15 @@ from .logs import (
     detect_soft_failure, label_and_sort_files,
 )
 
+log = logging.getLogger(__name__)
+
 _DEP_RE = re.compile(r'(after\w*):(\d+)')
 _EVAL_PREFIX_RE = re.compile(r'^(eval-[a-z0-9_]+)', re.I)
 _stdout_captured = set()
 _run_meta_fetched = {}          # (cluster, job_id) -> timestamp
 _RUN_META_TTL_SEC = 300
+_STALE_PINNED_ACTIVE_STATES = {"RUNNING", "COMPLETING", "PENDING"}
+_SACCT_BATCH_SIZE = 200
 
 
 def parse_dependency(raw):
@@ -746,7 +751,107 @@ def prune_job_sets():
         _run_meta_fetched.pop(k, None)
 
 
+_bookkeeping_lock = threading.Lock()
+_bookkeeping_pending = {}   # cluster -> latest context dict
+_bookkeeping_running = set()
+
+
+def _schedule_cluster_bookkeeping(cluster, context):
+    """Queue slow DB/SSH bookkeeping without blocking the live poll path."""
+    with _bookkeeping_lock:
+        _bookkeeping_pending[cluster] = context
+        if cluster in _bookkeeping_running:
+            return
+        _bookkeeping_running.add(cluster)
+    threading.Thread(
+        target=_cluster_bookkeeping_worker,
+        args=(cluster,),
+        daemon=True,
+        name=f"bookkeeping-{cluster}",
+    ).start()
+
+
+def _cluster_bookkeeping_worker(cluster):
+    enable_standalone_ssh()
+    while True:
+        with _bookkeeping_lock:
+            context = _bookkeeping_pending.pop(cluster, None)
+            if context is None:
+                _bookkeeping_running.discard(cluster)
+                return
+        try:
+            _run_cluster_bookkeeping(cluster, context)
+        except Exception:
+            log.exception("bookkeeping failed for %s", cluster)
+
+
+def _run_cluster_bookkeeping(cluster, context):
+    started = time.monotonic()
+    live_jobs = list(context.get("live_jobs", []))
+    current_ids = set(context.get("current_ids", set()))
+    prev_jobs = dict(context.get("prev_jobs", {}))
+    prev_ids = set(context.get("prev_ids", set()))
+    first_poll = bool(context.get("first_poll"))
+
+    gone_ids = prev_ids - current_ids
+    if gone_ids:
+        sacct_batch = sacct_final_batch(cluster, list(gone_ids)) if cluster != "local" else {}
+        for job_id in gone_ids:
+            _finalize_gone_job(
+                cluster,
+                job_id,
+                prev_jobs.get(job_id, {}),
+                sacct_record=sacct_batch.get(job_id),
+            )
+
+    if cluster != "local":
+        upsert_jobs_batch(cluster, live_jobs, terminal=False)
+        _reconcile_stale_pinned_active_rows(cluster, current_ids)
+
+        running_ids = [
+            job["jobid"] for job in live_jobs
+            if job.get("state", "").upper() in ("RUNNING", "COMPLETING")
+        ]
+        uncaptured = [jid for jid in running_ids if (cluster, jid) not in _stdout_captured]
+        if uncaptured:
+            _capture_stdout_paths(cluster, uncaptured)
+
+        all_jobs_for_runs = list(live_jobs)
+        pinned = get_board_pinned(cluster)
+        live_id_set = {job["jobid"] for job in all_jobs_for_runs}
+        for pinned_job in pinned:
+            pid = pinned_job.get("job_id", "")
+            if pid and pid not in live_id_set:
+                all_jobs_for_runs.append({
+                    "jobid": pid,
+                    "name": pinned_job.get("job_name", ""),
+                    "depends_on": pinned_job.get("depends_on", []),
+                    "dep_details": pinned_job.get("dep_details", []),
+                    "dependents": pinned_job.get("dependents", []),
+                    "project": pinned_job.get("project", ""),
+                    "state": pinned_job.get("state", ""),
+                    "started": pinned_job.get("started", ""),
+                    "submitted": pinned_job.get("submitted", ""),
+                })
+        _detect_and_register_runs(cluster, all_jobs_for_runs)
+
+        if first_poll:
+            _reconcile_db_with_squeue(cluster, current_ids)
+
+    if not _softfail_migrated:
+        _schedule_softfail_migration()
+
+    log.debug(
+        "bookkeeping cluster=%s live=%d gone=%d duration_ms=%d",
+        cluster,
+        len(live_jobs),
+        len(gone_ids),
+        round((time.monotonic() - started) * 1000),
+    )
+
+
 def poll_cluster(name):
+    started = time.monotonic()
     data = fetch_cluster_data(name)
 
     if data["status"] == "error":
@@ -757,22 +862,36 @@ def poll_cluster(name):
                 prev["updated"] = data["updated"]
             else:
                 _cache[name] = data
-        try:
-            has_live = bool(prev.get("jobs"))
-            if not has_live:
-                con = get_db()
-                has_live = bool(con.execute(
-                    "SELECT 1 FROM live_jobs WHERE cluster=? LIMIT 1", (name,),
-                ).fetchone())
-                con.close()
-            if not has_live:
-                set_cluster_state(name, "error", data["updated"], last_error=data.get("error"))
-            # When we have existing live data, don't touch cluster_state —
-            # the last known good state stays in the DB untouched.
-            # Transient failures (semaphore, DNS) won't cause UI flicker.
-        except Exception:
-            pass
-        return
+        has_live = bool(prev.get("jobs"))
+        prev_updated = prev.get("updated")
+        if not has_live:
+            con = get_db()
+            state_row = con.execute(
+                "SELECT updated FROM cluster_state WHERE cluster=?",
+                (name,),
+            ).fetchone()
+            has_live = bool(con.execute(
+                "SELECT 1 FROM live_jobs WHERE cluster=? LIMIT 1", (name,),
+            ).fetchone())
+            con.close()
+            if state_row and state_row["updated"]:
+                prev_updated = state_row["updated"]
+
+        if has_live:
+            set_cluster_state(name, "ok", prev_updated or data["updated"], last_error=data.get("error"))
+        else:
+            set_cluster_state(name, "error", data["updated"], last_error=data.get("error"))
+
+        duration_ms = round((time.monotonic() - started) * 1000)
+        log.warning("poll_cluster error cluster=%s duration_ms=%d error=%s",
+                    name, duration_ms, data.get("error"))
+        return {
+            "status": "error",
+            "cluster": name,
+            "updated": data["updated"],
+            "error": data.get("error", "poll failed"),
+            "duration_ms": duration_ms,
+        }
 
     _enrich_missing_gres(name, data.get("jobs", []))
     data.pop("last_error", None)
@@ -784,55 +903,39 @@ def poll_cluster(name):
         _cache[name] = data
         _seen_jobs[name] = current_ids
 
-    try:
-        replace_live_jobs(name, data.get("jobs", []))
-        set_cluster_state(name, "ok", data["updated"])
-    except Exception:
-        pass
-
-    gone_ids = prev_ids - current_ids
-    if gone_ids:
-        sacct_batch = sacct_final_batch(name, list(gone_ids)) if name != "local" else {}
-        for job_id in gone_ids:
-            _finalize_gone_job(name, job_id, prev_jobs.get(job_id, {}),
-                               sacct_record=sacct_batch.get(job_id))
+    replace_live_jobs(name, data.get("jobs", []))
+    set_cluster_state(name, "ok", data["updated"])
 
     if name != "local":
-        upsert_jobs_batch(name, data.get("jobs", []), terminal=False)
-
-        running_ids = [j["jobid"] for j in data.get("jobs", [])
-                       if j.get("state", "").upper() in ("RUNNING", "COMPLETING")]
-        uncaptured = [jid for jid in running_ids
-                      if (name, jid) not in _stdout_captured]
-        if uncaptured:
-            threading.Thread(
-                target=_capture_stdout_paths, args=(name, uncaptured), daemon=True,
-            ).start()
-
-        all_jobs_for_runs = list(data.get("jobs", []))
-        pinned = get_board_pinned(name)
-        live_ids = {j["jobid"] for j in all_jobs_for_runs}
-        for p in pinned:
-            pid = p.get("job_id", "")
-            if pid and pid not in live_ids:
-                all_jobs_for_runs.append({
-                    "jobid": pid,
-                    "name": p.get("job_name", ""),
-                    "depends_on": p.get("depends_on", []),
-                    "dep_details": p.get("dep_details", []),
-                    "dependents": p.get("dependents", []),
-                    "project": p.get("project", ""),
-                    "state": p.get("state", ""),
-                    "started": p.get("started", ""),
-                    "submitted": p.get("submitted", ""),
-                })
-        _detect_and_register_runs(name, all_jobs_for_runs)
-
-    if not prev_ids and name != "local":
-        _reconcile_db_with_squeue(name, current_ids)
-
-    if not _softfail_migrated:
+        _schedule_cluster_bookkeeping(name, {
+            "live_jobs": data.get("jobs", []),
+            "current_ids": current_ids,
+            "prev_jobs": prev_jobs,
+            "prev_ids": prev_ids,
+            "first_poll": not prev_ids,
+        })
+    elif not _softfail_migrated:
         _schedule_softfail_migration()
+
+    duration_ms = round((time.monotonic() - started) * 1000)
+    gone_ids = prev_ids - current_ids
+    log.debug(
+        "poll_cluster ok cluster=%s live=%d gone=%d duration_ms=%d bookkeeping=%s",
+        name,
+        len(data.get("jobs", [])),
+        len(gone_ids),
+        duration_ms,
+        "queued" if name != "local" else "none",
+    )
+    return {
+        "status": "ok",
+        "cluster": name,
+        "updated": data["updated"],
+        "live_jobs": len(data.get("jobs", [])),
+        "gone_jobs": len(gone_ids),
+        "bookkeeping": "queued" if name != "local" else "none",
+        "duration_ms": duration_ms,
+    }
 
 
 def _capture_stdout_paths(cluster_name, job_ids):
@@ -986,6 +1089,80 @@ def _finalize_gone_job(cluster, job_id, prev_job, sacct_record=None):
     if not record.get("ended_at"):
         record["ended_at"] = datetime.now().isoformat()
     upsert_job(cluster, record, terminal=True)
+
+
+def _sacct_final_batched(cluster, job_ids, batch_size=_SACCT_BATCH_SIZE):
+    """Fetch sacct results in bounded batches to avoid giant commands."""
+    ids = [str(job_id) for job_id in job_ids if job_id]
+    results = {}
+    for i in range(0, len(ids), batch_size):
+        results.update(sacct_final_batch(cluster, ids[i:i + batch_size]))
+    return results
+
+
+def _hide_pinned_jobs(cluster, job_ids):
+    if not job_ids:
+        return
+    con = get_db()
+    placeholders = ",".join("?" for _ in job_ids)
+    con.execute(
+        f"UPDATE job_history SET board_visible=0 WHERE cluster=? AND job_id IN ({placeholders})",
+        (cluster, *job_ids),
+    )
+    con.commit()
+    con.close()
+    invalidate_pinned_cache(cluster)
+
+
+def _reconcile_stale_pinned_active_rows(cluster, live_ids):
+    """Repair stale board rows that remain pinned with active states."""
+    pinned = get_board_pinned(cluster)
+    stale = [
+        row for row in pinned
+        if str(row.get("state", "")).upper() in _STALE_PINNED_ACTIVE_STATES
+        and str(row.get("job_id") or row.get("jobid") or "") not in live_ids
+    ]
+    if not stale:
+        return
+
+    finals = _sacct_final_batched(
+        cluster,
+        [row.get("job_id") or row.get("jobid") for row in stale],
+    )
+    terminal_records = []
+    hide_ids = []
+
+    for row in stale:
+        jid = str(row.get("job_id") or row.get("jobid") or "")
+        if not jid:
+            continue
+        final = finals.get(jid, {})
+        final_state = (final.get("state", "") or "").upper().split()[0]
+        if not final_state or final_state in _STALE_PINNED_ACTIVE_STATES:
+            hide_ids.append(jid)
+            continue
+
+        record = dict(final)
+        record.setdefault("jobid", jid)
+        if not record.get("name"):
+            record["name"] = row.get("job_name") or row.get("name") or ""
+        if not record.get("reason") and final.get("state") and " " in final["state"]:
+            record["reason"] = final["state"]
+        for key in (
+            "log_path", "submitted", "started", "elapsed", "nodes", "gres",
+            "partition", "reason", "exit_code", "dependency", "project",
+            "node_list", "account",
+        ):
+            if row.get(key) and not record.get(key):
+                record[key] = row[key]
+        record["state"] = final_state
+        record.setdefault("ended_at", datetime.now().isoformat())
+        terminal_records.append(record)
+
+    if terminal_records:
+        upsert_jobs_batch(cluster, terminal_records, terminal=True)
+    if hide_ids:
+        _hide_pinned_jobs(cluster, hide_ids)
 
 
 def _reconcile_db_with_squeue(cluster, live_ids):

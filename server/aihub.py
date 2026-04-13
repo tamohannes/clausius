@@ -40,6 +40,16 @@ _aihub_cache = {}
 _ssl_ctx = ssl.create_default_context()
 
 
+def _stamp_team_alloc(result):
+    """Re-apply current TEAM_GPU_ALLOC to a (possibly cached) result dict."""
+    for friendly, cd in result.get("clusters", {}).items():
+        ta = TEAM_GPU_ALLOC.get(friendly)
+        if ta is not None:
+            cd["team_gpu_alloc"] = ta
+        else:
+            cd.pop("team_gpu_alloc", None)
+
+
 def _opensearch_query(body, timeout=10):
     """POST a query to the AI Hub OpenSearch endpoint.
 
@@ -165,6 +175,7 @@ def get_ppp_allocations(accounts=None, clusters=None, force=False):
     if not force:
         cached = _cache_get(_aihub_cache, cache_key, AIHUB_CACHE_TTL)
         if cached is not None:
+            _stamp_team_alloc(cached)
             return cached
 
     accts = accounts or PPP_ACCOUNTS
@@ -270,10 +281,6 @@ def get_ppp_allocations(accounts=None, clusters=None, force=False):
         cluster_data["gpu_type"] = gpu_type
         cluster_data["os_name"] = os_name
 
-        team_alloc = TEAM_GPU_ALLOC.get(friendly)
-        if team_alloc is not None:
-            cluster_data["team_gpu_alloc"] = team_alloc
-
         if cluster_data["accounts"]:
             result["clusters"][friendly] = cluster_data
     for friendly, occ_data in occ.items():
@@ -282,6 +289,7 @@ def get_ppp_allocations(accounts=None, clusters=None, force=False):
             result["clusters"][friendly]["cluster_total_gpus"] = occ_data["total"]
 
     _cache_set(_aihub_cache, cache_key, result)
+    _stamp_team_alloc(result)
     return result
 
 

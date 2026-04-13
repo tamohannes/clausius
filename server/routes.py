@@ -29,15 +29,15 @@ from .config import (
     get_project_color, get_project_emoji, extract_project, extract_campaign,
 )
 from .db import (
-    normalize_job_times_local, get_board_pinned,
     dismiss_job, dismiss_by_state_prefix,
     get_history, get_projects, get_db,
-    _restore_dependency_fields,
-    get_live_board, get_live_jobs_for_cluster,
     cache_db_get, cache_db_get_stale, cache_db_get_all, cache_db_get_all_multi,
     cache_db_put,
 )
-from .ssh import ssh_run, ssh_run_with_timeout, ssh_run_data, ssh_run_data_with_timeout, get_circuit_breaker_status
+from .ssh import (
+    ssh_run, ssh_run_with_timeout, ssh_run_data, ssh_run_data_with_timeout,
+    get_circuit_breaker_status, cancel_jobs_with_report,
+)
 from .mounts import (
     resolve_mounted_path, resolve_file_path,
     list_local_dir, prefetch_nested_dir_cache_local,
@@ -55,6 +55,7 @@ from .jobs import (
 )
 from .poller import get_poller, get_version, touch_demand
 from .db import get_run_with_jobs
+from .board import build_board_snapshot, build_cluster_board_entry
 
 api = Blueprint("api", __name__)
 
@@ -114,74 +115,6 @@ def _log_slow(response):
     return response
 
 
-def _rebuild_cross_deps(jobs):
-    """Rebuild depends_on/dependents across the full merged set of jobs.
-
-    After merging live and pinned jobs, their dependency arrays only reference
-    IDs within their original sets.  This rebuilds them so cross-references
-    (e.g. a running child pointing to a completed parent) are restored.
-    Uses both explicit dependency parsing and name-based inference.
-    """
-    from .jobs import parse_dependency
-    from .db import _infer_parent_from_name
-    id_set = {j.get("jobid") or j.get("job_id", "") for j in jobs}
-    by_name = {}
-    for j in jobs:
-        name = j.get("name") or j.get("job_name") or ""
-        if name:
-            by_name[name] = j.get("jobid") or j.get("job_id", "")
-
-    for j in jobs:
-        dep_details = j.get("dep_details", [])
-        if not dep_details:
-            raw = j.get("dependency", "")
-            if raw and raw not in ("(null)", "None"):
-                dep_details = parse_dependency(raw)
-                j["dep_details"] = dep_details
-        j["depends_on"] = [d["job_id"] for d in dep_details if d["job_id"] in id_set]
-
-        if not j["depends_on"]:
-            name = j.get("name") or j.get("job_name") or ""
-            inferred = _infer_parent_from_name(name, by_name, id_set, j)
-            if inferred:
-                j["depends_on"] = [inferred]
-                j["dep_details"] = [{"type": "afterany", "job_id": inferred}]
-
-    children_map = {}
-    for j in jobs:
-        jid = j.get("jobid") or j.get("job_id", "")
-        for pid in j.get("depends_on", []):
-            children_map.setdefault(pid, []).append(jid)
-    for j in jobs:
-        jid = j.get("jobid") or j.get("job_id", "")
-        j["dependents"] = children_map.get(jid, [])
-
-
-def _fill_run_ids(cluster, jobs):
-    """Look up run_id from DB for live jobs that are missing it."""
-    need = [j for j in jobs if not j.get("run_id") and not j.get("_pinned")]
-    if not need:
-        return
-    jid_map = {}
-    for j in need:
-        jid = j.get("jobid") or j.get("job_id", "")
-        if jid:
-            jid_map.setdefault(jid, []).append(j)
-    if not jid_map:
-        return
-    con = get_db()
-    placeholders = ",".join("?" for _ in jid_map)
-    rows = con.execute(
-        f"SELECT job_id, run_id FROM job_history WHERE cluster=? AND job_id IN ({placeholders})",
-        (cluster, *jid_map.keys()),
-    ).fetchall()
-    con.close()
-    for row in rows:
-        if row["run_id"]:
-            for j in jid_map.get(row["job_id"], []):
-                j["run_id"] = row["run_id"]
-
-
 @api.route("/")
 def index():
     resp = make_response(render_template("index.html", clusters=CLUSTERS, username=DEFAULT_USER, team=TEAM_NAME))
@@ -201,80 +134,7 @@ def api_jobs():
     if request.headers.get("If-None-Match") == etag:
         return Response(status=304)
 
-    board, states = get_live_board()
-
-    snapshot = {}
-    for name in CLUSTERS:
-        st = states.get(name, {})
-        jobs = list(board.get(name, []))
-        entry = {
-            "status": st.get("status", "ok"),
-            "jobs": jobs,
-            "updated": st.get("updated"),
-        }
-        err = st.get("last_error")
-        if err:
-            if st.get("status") == "error":
-                entry["error"] = err
-            else:
-                entry["last_error"] = err
-        snapshot[name] = entry
-
-    all_pinned = get_board_pinned()
-    pinned_by_cluster = {}
-    for row in all_pinned:
-        c = row["cluster"]
-        pinned_by_cluster.setdefault(c, []).append(row)
-
-    overlays = cache_db_get_all_multi(["progress", "progress_source", "crash", "est_start"])
-    db_progress = overlays["progress"]
-    db_progress_src = overlays["progress_source"]
-    db_crash = overlays["crash"]
-    db_est_start = overlays["est_start"]
-
-    for name in list(CLUSTERS.keys()):
-        if name not in snapshot:
-            snapshot[name] = {"status": "ok", "jobs": [], "updated": None}
-        data = snapshot[name]
-        if data.get("status") != "ok":
-            continue
-        live_ids = {j["jobid"] for j in data.get("jobs", [])}
-        pinned = [
-            {**p, "_pinned": True, "jobid": p["job_id"], "name": p["job_name"]}
-            for p in pinned_by_cluster.get(name, [])
-            if p["job_id"] not in live_ids
-        ]
-        if pinned:
-            data["jobs"] = data.get("jobs", []) + pinned
-            _rebuild_cross_deps(data["jobs"])
-        _fill_run_ids(name, data.get("jobs", []))
-        data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
-        for j in data.get("jobs", []):
-            st = j.get("state", "").upper()
-            jid = j.get("jobid")
-            ck = f"{name}:{jid}"
-            if st in ("RUNNING", "COMPLETING"):
-                pct = _cache_get(_progress_cache, (name, jid), PROGRESS_TTL_SEC) or db_progress.get(ck)
-                if pct is not None:
-                    j["progress"] = pct
-                    src = _cache_get(_progress_source_cache, (name, jid), PROGRESS_TTL_SEC) or db_progress_src.get(ck)
-                    if src:
-                        j["progress_source"] = src
-                crash = _cache_get(_crash_cache, (name, jid), CRASH_TTL_SEC) or db_crash.get(ck)
-                if crash:
-                    j["crash_detected"] = crash
-            if st == "PENDING":
-                est = _cache_get(_est_start_cache, (name, jid), EST_START_TTL_SEC) or db_est_start.get(ck)
-                if est:
-                    j["est_start"] = est
-            if not j.get("project"):
-                j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
-            proj = j.get("project", "")
-            if proj:
-                j["project_color"] = get_project_color(proj)
-                j["project_emoji"] = get_project_emoji(proj)
-                _jname = j.get("name") or j.get("job_name") or ""
-                j["campaign"] = extract_campaign(_jname, proj)
+    snapshot = build_board_snapshot(schedule_prefetch_active=True)
 
     def cluster_sort_key(item):
         name, data = item
@@ -285,17 +145,6 @@ def api_jobs():
         return (not has_running, not has_pending, not has_live, name)
 
     ordered = dict(sorted(snapshot.items(), key=cluster_sort_key))
-
-    for c, d in ordered.items():
-        if d.get("status") != "ok":
-            continue
-        active_jobs = [
-            j for j in d.get("jobs", [])
-            if str(j.get("state", "")).upper() in {"RUNNING", "COMPLETING"}
-            and not j.get("_pinned")
-        ][:3]
-        for j in active_jobs:
-            schedule_prefetch(c, j.get("jobid"))
 
     mounts = all_mount_status()
     poller_status = get_poller().get_status()
@@ -437,69 +286,12 @@ def api_jobs_cluster(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     if request.args.get("force") == "1":
-        get_poller().request_priority(cluster)
-
-    jobs, st = get_live_jobs_for_cluster(cluster)
-    data = {
-        "status": (st or {}).get("status", "ok"),
-        "jobs": list(jobs),
-        "updated": (st or {}).get("updated"),
-    }
-    err = (st or {}).get("last_error")
-    if err:
-        if (st or {}).get("status") == "error":
-            data["error"] = err
-        else:
-            data["last_error"] = err
-
-    if data.get("status") == "ok":
-        live_ids = {j["jobid"] for j in data.get("jobs", [])}
-        pinned = [
-            {**p, "_pinned": True, "jobid": p["job_id"], "name": p["job_name"]}
-            for p in get_board_pinned(cluster) if p["job_id"] not in live_ids
-        ]
-        if pinned:
-            data["jobs"] = data.get("jobs", []) + pinned
-            _rebuild_cross_deps(data["jobs"])
-        _fill_run_ids(cluster, data.get("jobs", []))
-        data["jobs"] = [normalize_job_times_local(j) for j in data.get("jobs", [])]
-
-        overlays = cache_db_get_all_multi(["progress", "progress_source", "crash", "est_start"])
-        db_progress = overlays["progress"]
-        db_progress_src = overlays["progress_source"]
-        db_crash = overlays["crash"]
-        db_est_start = overlays["est_start"]
-
-        for j in data.get("jobs", []):
-            s = str(j.get("state", "")).upper()
-            jid = j.get("jobid")
-            ck = f"{cluster}:{jid}"
-            if s in {"RUNNING", "COMPLETING"} and not j.get("_pinned"):
-                schedule_prefetch(cluster, jid)
-            if s in ("RUNNING", "COMPLETING"):
-                pct = _cache_get(_progress_cache, (cluster, jid), PROGRESS_TTL_SEC) or db_progress.get(ck)
-                if pct is not None:
-                    j["progress"] = pct
-                    src = _cache_get(_progress_source_cache, (cluster, jid), PROGRESS_TTL_SEC) or db_progress_src.get(ck)
-                    if src:
-                        j["progress_source"] = src
-                crash = _cache_get(_crash_cache, (cluster, jid), CRASH_TTL_SEC) or db_crash.get(ck)
-                if crash:
-                    j["crash_detected"] = crash
-            if s == "PENDING":
-                est = _cache_get(_est_start_cache, (cluster, jid), EST_START_TTL_SEC) or db_est_start.get(ck)
-                if est:
-                    j["est_start"] = est
-            if not j.get("project"):
-                j["project"] = extract_project(j.get("name") or j.get("job_name") or "")
-            proj = j.get("project", "")
-            if proj:
-                j["project_color"] = get_project_color(proj)
-                j["project_emoji"] = get_project_emoji(proj)
-                _jname = j.get("name") or j.get("job_name") or ""
-                j["campaign"] = extract_campaign(_jname, proj)
+        get_poller().poll_now(cluster)
+    touch_demand()
+    data = build_cluster_board_entry(cluster, schedule_prefetch_active=True)
     if cluster != "local":
         data["mount"] = cluster_mount_status(cluster)
+    data["poller"] = get_poller().get_status().get(cluster, {})
     return jsonify(data)
 
 
@@ -515,6 +307,9 @@ def api_prefetch_visible():
         if c and c in CLUSTERS:
             clusters.add(c)
             valid += 1
+            jid = str(item.get("job_id", "")).strip()
+            if jid:
+                schedule_prefetch(c, jid)
     return jsonify({"status": "ok", "clusters": list(clusters), "jobs": valid})
 
 
@@ -557,7 +352,14 @@ def api_progress():
             team_usage[c] = tu
 
     from .config import TEAM_GPU_ALLOC
-    return jsonify({"progress": progress, "progress_sources": progress_sources, "est_starts": est_starts, "team_usage": team_usage, "team_gpu_allocations": dict(TEAM_GPU_ALLOC)})
+    return jsonify({
+        "board_version": get_version(),
+        "progress": progress,
+        "progress_sources": progress_sources,
+        "est_starts": est_starts,
+        "team_usage": team_usage,
+        "team_gpu_allocations": dict(TEAM_GPU_ALLOC),
+    })
 
 
 @api.route("/api/team_usage", methods=["POST"])
@@ -613,11 +415,11 @@ def api_cancel(cluster, job_id):
         if cluster == "local":
             os.kill(int(job_id), 15)
             return jsonify({"status": "ok"})
-        threading.Thread(
-            target=lambda: ssh_run_with_timeout(cluster, f"scancel {job_id}", timeout_sec=10),
-            daemon=True,
-        ).start()
-        return jsonify({"status": "ok"})
+        result = cancel_jobs_with_report(cluster, [job_id], timeout_sec=10, chunk_size=1)
+        if result["cancelled_ids"]:
+            return jsonify({"status": "ok"})
+        error = result["errors"][0]["error"] if result["errors"] else "Cancel failed"
+        return jsonify({"status": "error", "error": error})
     except Exception as e:
         _log.exception("cancel %s/%s failed", cluster, job_id)
         return jsonify({"status": "error", "error": str(e)})
@@ -645,11 +447,22 @@ def api_cancel_jobs(cluster):
             if errors:
                 return jsonify({"status": "partial", "cancelled": len(sanitized) - len(errors), "errors": errors})
             return jsonify({"status": "ok", "cancelled": len(sanitized)})
-        threading.Thread(
-            target=lambda: ssh_run_with_timeout(cluster, f"scancel {' '.join(sanitized)}", timeout_sec=10),
-            daemon=True,
-        ).start()
-        return jsonify({"status": "ok", "cancelled": len(sanitized)})
+
+        result = cancel_jobs_with_report(cluster, sanitized, timeout_sec=20, chunk_size=25)
+        cancelled = len(result["cancelled_ids"])
+        errors = [
+            f'{err["job_id"]}: {err["error"]}'
+            for err in result["errors"]
+        ]
+        if errors:
+            return jsonify({
+                "status": "partial",
+                "cancelled": cancelled,
+                "cancelled_ids": result["cancelled_ids"],
+                "failed_ids": [err["job_id"] for err in result["errors"]],
+                "errors": errors,
+            })
+        return jsonify({"status": "ok", "cancelled": cancelled, "cancelled_ids": result["cancelled_ids"]})
     except Exception as e:
         _log.exception("cancel_jobs %s failed", cluster)
         return jsonify({"status": "error", "error": str(e)})
@@ -1294,11 +1107,15 @@ def api_jsonl_record(cluster, job_id):
 
 @api.route("/api/force_poll/<cluster>", methods=["POST"])
 def api_force_poll(cluster):
-    """Signal the poller to poll a cluster immediately."""
+    """Run one explicit bounded live poll now."""
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
-    get_poller().request_priority(cluster)
-    return jsonify({"status": "queued"})
+    touch_demand()
+    result = get_poller().poll_now(cluster)
+    if result.get("status") == "busy":
+        return jsonify(result), 202
+    code = 200 if result.get("status") == "ok" else 503
+    return jsonify(result), code
 
 
 @api.route("/api/health")

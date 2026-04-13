@@ -26,7 +26,10 @@ let navCollapsed = false;
 
 function freshnessBadgeHtml(clusterName) {
   const d = allData[clusterName];
-  const staleness = d?.poller?.staleness_sec;
+  let staleness = d?.poller?.staleness_sec;
+  if (staleness == null && d?.updated) {
+    staleness = (Date.now() - new Date(d.updated).getTime()) / 1000;
+  }
   if (staleness == null) return '';
   let label;
   if (staleness < 60) label = `${Math.round(staleness)}s`;
@@ -84,36 +87,12 @@ function toggleRunGroup(groupId) {
   if (chev) chev.classList.toggle('expanded', show);
 }
 
-const _progressCache = (() => {
-  try {
-    return JSON.parse(sessionStorage.getItem('clausius.progress') || '{}');
-  } catch (_) { return {}; }
-})();
-const _progressSourceCache = (() => {
-  try {
-    return JSON.parse(sessionStorage.getItem('clausius.progressSrc') || '{}');
-  } catch (_) { return {}; }
-})();
-
 function _saveProgressCache() {
-  try { sessionStorage.setItem('clausius.progress', JSON.stringify(_progressCache)); } catch (_) {}
-  try { sessionStorage.setItem('clausius.progressSrc', JSON.stringify(_progressSourceCache)); } catch (_) {}
+  return;
 }
 
 function resolveProgress(cluster, jobid, apiProgress, state, apiSource) {
-  const key = `${cluster}:${jobid}`;
-  const st = (state || '').toUpperCase();
-  if (st !== 'RUNNING' && st !== 'COMPLETING') {
-    delete _progressCache[key];
-    delete _progressSourceCache[key];
-    return { pct: apiProgress, source: apiSource || '' };
-  }
-  if (apiProgress != null) {
-    _progressCache[key] = apiProgress;
-    if (apiSource) _progressSourceCache[key] = apiSource;
-    return { pct: apiProgress, source: apiSource || _progressSourceCache[key] || '' };
-  }
-  return { pct: _progressCache[key] ?? null, source: _progressSourceCache[key] || '' };
+  return { pct: apiProgress ?? null, source: apiSource || '' };
 }
 
 function isSoftFail(state, reason) {
@@ -520,18 +499,7 @@ function groupJobsByDependency(jobs) {
     }
   }
 
-  // Also union by name-prefix for jobs without explicit deps.
-  const nameGroups = {};
-  for (const j of jobs) {
-    const key = groupKeyForJob(j.name);
-    if (!nameGroups[key]) nameGroups[key] = [];
-    nameGroups[key].push(j.jobid);
-  }
-  for (const ids of Object.values(nameGroups)) {
-    for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
-  }
-
-  // Union by run_id so all jobs from the same run stay grouped.
+  // Union by run_id so all jobs from the same detected run stay grouped.
   const runGroups = {};
   for (const j of jobs) {
     if (j.run_id) {
