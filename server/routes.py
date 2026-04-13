@@ -198,7 +198,7 @@ def api_clear_failed(cluster):
 def api_clear_cancelled(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
-    dismiss_by_state_prefix(cluster, ["CANCELLED"])
+    dismiss_by_state_prefix(cluster, ["CANCELLED", "COMPLETING"])
     return jsonify({"status": "ok"})
 
 

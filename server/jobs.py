@@ -1617,7 +1617,8 @@ def _prefetch_job_data(cluster, job_id):
                 files = (log_result or {}).get("files", [])
                 if files:
                     _extract_progress_with_source(cluster, job_id, files)
-        except Exception:
+        except Exception as e:
+            log.error(f"Error in prefetch fast path for {cluster}/{job_id}: {e}", exc_info=True)
             pass
         try:
             stats = get_job_stats(cluster, job_id)

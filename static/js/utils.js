@@ -206,7 +206,8 @@ function _isFailedNotCancelled(s) {
 }
 
 function _isCancelledState(s) {
-  return (s || '').toUpperCase().startsWith('CANCEL');
+  s = (s || '').toUpperCase();
+  return s.startsWith('CANCEL') || s.startsWith('COMPLETING');
 }
 
 function isCompletedState(s) {

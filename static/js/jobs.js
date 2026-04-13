@@ -602,7 +602,7 @@ function renderCard(name, data) {
     ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="clearFailed('${name}')">clear ${pinnedFailedCount} failed</button>`
     : '';
   const clearCancelledBtn = pinnedCancelledCount > 0
-    ? `<button class="icon-btn" style="border-color:var(--gray-bd);color:var(--muted)" onclick="clearCancelled('${name}')">clear ${pinnedCancelledCount} cancelled</button>`
+    ? `<button class="icon-btn" style="border-color:var(--gray-bd);color:var(--muted)" onclick="clearCancelled('${name}')">clear ${pinnedCancelledCount} canc/comp</button>`
     : '';
   const clearCompletedBtn = pinnedCompletedCount > 0
     ? `<button class="icon-btn" style="border-color:#bbf7d0;color:var(--green)" onclick="clearCompleted('${name}')">clear ${pinnedCompletedCount} done</button>`
