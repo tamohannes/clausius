@@ -1584,6 +1584,7 @@ def _prefetch_job_data(cluster, job_id):
             db_path = _db_log_path(cluster, job_id)
             fast_pct = None
             if db_path:
+                db_path = db_path.replace("%j", str(job_id))
                 mt = resolve_mounted_path(cluster, db_path, want_dir=False)
                 if mt and os.path.isfile(mt):
                     content = tail_local_file(mt, lines=220)

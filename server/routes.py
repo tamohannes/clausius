@@ -335,13 +335,21 @@ def api_progress():
         if not c or not jid:
             continue
         ck = f"{c}:{jid}"
-        pct = _cache_get(_progress_cache, (c, jid), PROGRESS_TTL_SEC) or db_progress.get(ck)
+        
+        pct = _cache_get(_progress_cache, (c, jid), PROGRESS_TTL_SEC)
+        if pct is None:
+            pct = db_progress.get(ck)
+            
         if pct is not None:
             progress[ck] = pct
-            src = _cache_get(_progress_source_cache, (c, jid), PROGRESS_TTL_SEC) or db_progress_src.get(ck)
+            src = _cache_get(_progress_source_cache, (c, jid), PROGRESS_TTL_SEC)
+            if src is None:
+                src = db_progress_src.get(ck)
             if src:
                 progress_sources[ck] = src
-        est = _cache_get(_est_start_cache, (c, jid), EST_START_TTL_SEC) or db_est_start.get(ck)
+        est = _cache_get(_est_start_cache, (c, jid), EST_START_TTL_SEC)
+        if est is None:
+            est = db_est_start.get(ck)
         if est:
             est_starts[ck] = est
 
