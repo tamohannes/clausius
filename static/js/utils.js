@@ -24,6 +24,18 @@ let _isResizingTree = false;
 let _isResizingNav = false;
 let navCollapsed = false;
 
+function freshnessBadgeHtml(clusterName) {
+  const d = allData[clusterName];
+  const staleness = d?.poller?.staleness_sec;
+  if (staleness == null) return '';
+  let label;
+  if (staleness < 60) label = `${Math.round(staleness)}s`;
+  else if (staleness < 3600) label = `${Math.round(staleness / 60)}m`;
+  else label = `${Math.round(staleness / 3600)}h`;
+  const cls = staleness <= 20 ? 'fresh' : staleness <= 60 ? 'warm' : 'old';
+  return `<span class="freshness-badge ${cls}" title="Data age: ${label} ago">${label}</span>`;
+}
+
 /* ── Cluster utilization data (from external dashboard) ── */
 let _clusterUtil = null;
 let _clusterUtilFetching = false;
@@ -1316,6 +1328,7 @@ function _renderPppAllocations(data) {
               ${gpuType ? `<span class="ppp-card-gpu">${gpuType}</span>` : ''}
               <span class="ppp-card-gpu" style="opacity:0.5">no PPP data</span>
               ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
+              ${freshnessBadgeHtml(cn)}
             </div>
             <div class="ppp-card-live"><span class="${idleCls}">${idleGpusP} idle</span> · ${pendingJobs} queued</div>`;
 
@@ -1424,6 +1437,7 @@ function _renderPppAllocations(data) {
         <span class="ppp-card-cluster">${cn}</span>
         ${cd.gpu_type ? `<span class="ppp-card-gpu">${cd.gpu_type}</span>` : ''}
         ${teamScale && teamNum ? `<span class="ppp-card-scale-label">scaled to ${teamNum}</span>` : ''}
+        ${freshnessBadgeHtml(cn)}
       </div>
       ${ps ? `<div class="ppp-card-live"><span class="${idleCls}">${idleGpus} idle</span> · ${pendingJobs} queued</div>` : ''}`;
 

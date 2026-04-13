@@ -126,6 +126,7 @@ def _run_init():
     from server.mounts import mount_health_loop
     from server.wds import wds_snapshot_loop
     from server.config import cache_gc_loop
+    from server.poller import start_poller
 
     init_db()
     migrate_legacy_files()
@@ -136,6 +137,7 @@ def _run_init():
     threading.Thread(target=wds_snapshot_loop, daemon=True).start()
     threading.Thread(target=cache_gc_loop, daemon=True).start()
     threading.Thread(target=_watchdog_notify_loop, daemon=True).start()
+    start_poller()
 
 
 if __name__ == "__main__":

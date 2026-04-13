@@ -693,10 +693,9 @@ function startCountdown() {
     document.getElementById('cd').textContent = countdown;
     if (countdown <= 0) {
       countdown = refreshIntervalSec;
+      fetchAll();
       if (typeof currentTab !== 'undefined' && currentTab === 'clusters') {
         refreshPppAllocations();
-      } else {
-        fetchAll();
       }
     }
   }, 1000);

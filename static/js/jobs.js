@@ -397,15 +397,35 @@ function renderCard(name, data) {
   if (hasRunning) cardClass += ' has-running';
   if (isEmpty) cardClass += ' is-empty';
 
-  const statusClass = isErr ? 'error' : 'ok';
+  const poller = data.poller || {};
+  const pollerState = poller.state || 'healthy';
+  const failCount = poller.failure_count || 0;
+  const staleness = poller.staleness_sec;
+  const isStale = staleness != null && staleness > 60;
+  const isRetrying = pollerState === 'backoff' || pollerState === 'retrying';
+  const statusClass = (isErr && failCount >= 3 && !jobs.length) ? 'error' : isStale ? 'stale' : 'ok';
   const runCount = jobs.filter(j => (j.state || '').toUpperCase() === 'RUNNING' || (j.state || '').toUpperCase() === 'COMPLETING').length;
   const pendCount = jobs.filter(j => (j.state || '').toUpperCase() === 'PENDING').length;
   const jobParts = [];
   if (runCount) jobParts.push(`${runCount} running`);
   if (pendCount) jobParts.push(`${pendCount} pending`);
-  const jobCountText = isErr ? 'unreachable' : (jobParts.length ? jobParts.join(' · ') : 'no jobs');
+  let jobCountText;
+  if (isErr && failCount >= 3 && !jobs.length) {
+    jobCountText = 'unreachable';
+  } else {
+    jobCountText = jobParts.length ? jobParts.join(' · ') : 'no jobs';
+    if (isStale) {
+      const mins = Math.round(staleness / 60);
+      jobCountText += ` · data ${mins}m old`;
+    }
+    if (isRetrying && failCount > 0) {
+      const nextSec = Math.round(poller.next_poll_sec || 0);
+      jobCountText += ` · retrying in ${nextSec}s`;
+    }
+  }
 
   const updated = data.updated ? new Date(data.updated).toLocaleTimeString() : '';
+  const freshBadge = freshnessBadgeHtml(name);
   const mount = data.mount || { mounted: false };
 
   let body = '';
@@ -562,10 +582,6 @@ function renderCard(name, data) {
   const pinnedCompletedCount = jobs.filter(j => j._pinned && isCompletedState(j.state)).length;
   const liveCount   = jobs.filter(j => !j._pinned).length;
 
-  const cancelableAll = jobs.filter(j => !j._pinned).map(j => j.jobid);
-  const cancelAllBtn = cancelableAll.length > 1 && name !== 'local'
-    ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="cancelGroup('${name}','${JSON.stringify(cancelableAll).replace(/"/g, '&quot;')}','all ${cancelableAll.length} jobs')">cancel all ${cancelableAll.length}</button>`
-    : '';
   const clearFailedBtn = pinnedFailedCount > 0
     ? `<button class="icon-btn" style="border-color:#fecaca;color:var(--red)" onclick="clearFailed('${name}')">clear ${pinnedFailedCount} failed</button>`
     : '';
@@ -575,35 +591,31 @@ function renderCard(name, data) {
   const clearCompletedBtn = pinnedCompletedCount > 0
     ? `<button class="icon-btn" style="border-color:#bbf7d0;color:var(--green)" onclick="clearCompleted('${name}')">clear ${pinnedCompletedCount} done</button>`
     : '';
-  const mountBtn = name !== 'local'
-    ? (mount.mounted
-      ? `<button class="icon-btn" onclick="unmountCluster('${name}')">unmount</button>`
-      : `<button class="icon-btn" onclick="mountCluster('${name}')">mount</button>`)
-    : '';
   const mountBadge = name !== 'local'
     ? `<span class="mount-badge ${mount.mounted ? 'ok' : 'off'}" title="${(mount.root || '').replace(/"/g, '&quot;')}">${mount.mounted ? 'mounted' : 'ssh-only'}</span>`
+    : '';
+  const mountBtn = (name !== 'local' && !mount.mounted)
+    ? `<button class="icon-btn" onclick="mountCluster('${name}')">mount</button>`
     : '';
 
   return `<div class="${cardClass}" id="card-${name}">
     <div class="card-head">
-      <div class="card-title">
+      <div class="card-info-row">
         <span class="card-name">${name}</span>
         <span class="badge">${info.gpu_type}</span>
         ${quotaBadgesHtml(name)}
-      </div>
-      <div class="card-meta">
         <span class="status-indicator ${statusClass}"></span>
         <span class="job-count-text">${jobCountText}</span>
         ${mountBadge}
-        <div class="card-actions">
-          <button class="icon-btn" onclick="refreshCluster('${name}',true)">↻</button>
-          ${mountBtn}
-          <button class="icon-btn" onclick="showClusterHistory('${name}')">history</button>
-          ${clearCompletedBtn}
-          ${clearCancelledBtn}
-          ${clearFailedBtn}
-          ${cancelAllBtn}
-        </div>
+        <button class="icon-btn" onclick="refreshCluster('${name}',true)" title="Refresh">↻</button>
+        ${freshBadge}
+      </div>
+      <div class="card-actions-row">
+        ${mountBtn}
+        <button class="icon-btn" onclick="showClusterHistory('${name}')">history</button>
+        ${clearCompletedBtn}
+        ${clearCancelledBtn}
+        ${clearFailedBtn}
       </div>
     </div>
     ${body}
@@ -636,7 +648,11 @@ function groupClusters(data) {
     const d = data[name];
     if (!d) continue;
     if (name === 'local') { local.push(name); sectionMap[name] = 'local'; continue; }
-    if (d.status === 'error') { failed.push(name); sectionMap[name] = 'unreachable'; continue; }
+    const poller = d.poller || {};
+    const failCount = poller.failure_count || 0;
+    if (d.status === 'error' && failCount >= 3 && !(d.jobs && d.jobs.length)) {
+      failed.push(name); sectionMap[name] = 'unreachable'; continue;
+    }
     const allJobs = d.jobs || [];
     const liveJobs = allJobs.filter(j => !j._pinned);
     const hasActiveJobs = liveJobs.length > 0
@@ -854,8 +870,7 @@ function _showLoadingSkeleton() {
     <div class="grid">${Object.keys(CLUSTERS).map(name => `
       <div class="card" id="card-${name}">
         <div class="card-head">
-          <div class="card-title"><span class="card-name">${name}</span><span class="badge">${CLUSTERS[name].gpu_type}</span></div>
-          <div class="card-meta"><span class="status-indicator loading"></span><span class="job-count-text">loading…</span></div>
+          <div class="card-info-row"><span class="card-name">${name}</span><span class="badge">${CLUSTERS[name].gpu_type}</span><span class="status-indicator loading"></span><span class="job-count-text">loading…</span></div>
         </div>
         <div class="no-jobs" style="color:#bbb">waiting…</div>
       </div>`).join('')}
@@ -873,6 +888,8 @@ function _isCacheFresh(data) {
 }
 
 let _fetchAllRunning = false;
+let _lastEtag = null;
+
 async function fetchAll() {
   if (_fetchAllRunning || document.hidden) return;
   _fetchAllRunning = true;
@@ -881,7 +898,6 @@ async function fetchAll() {
 async function _doFetchAll() {
   const grid = document.getElementById('grid');
 
-  // 0) Restore locally cached data instantly so the UI is never empty.
   if (!Object.keys(allData).length) {
     try {
       const stored = sessionStorage.getItem('clausius.allData');
@@ -910,10 +926,21 @@ async function _doFetchAll() {
     });
   }
 
-  // 1) Fetch fresh data from server (updates cache on success).
+  // Single conditional fetch — replaces bulk + N per-cluster requests
   try {
-    const res = await fetchWithTimeout('/api/jobs');
+    const headers = {};
+    if (_lastEtag) headers['If-None-Match'] = _lastEtag;
+    const res = await fetchWithTimeout('/api/jobs', { headers });
+
+    if (res.status === 304) {
+      _clearErrorBannerKey('jobs');
+      _clearErrorBannerKey('clusters');
+      grid.classList.remove('grid-loading');
+      return;
+    }
+
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    _lastEtag = res.headers.get('ETag');
     const fresh = await res.json();
     const hasData = Object.values(fresh).some(d => d.updated);
     if (hasData) {
@@ -921,10 +948,11 @@ async function _doFetchAll() {
       _fillMissing();
       _renderAll();
       _clearErrorBannerKey('jobs');
+      _clearErrorBannerKey('clusters');
       _persistAllData();
     }
   } catch (e) {
-    console.warn('Initial job fetch failed, will retry per-cluster', e);
+    console.warn('Job fetch failed:', e);
     if (!Object.keys(allData).length) {
       _setErrorBanner('jobs', `Server unreachable — retrying (${e.message})`);
     }
@@ -932,73 +960,21 @@ async function _doFetchAll() {
 
   if (!Object.keys(allData).length && !grid.children.length) _showLoadingSkeleton();
 
-  // 2) Refresh each cluster in parallel; cards update as responses arrive.
-  grid.classList.add('grid-loading');
-  const barTimeout = setTimeout(() => grid.classList.remove('grid-loading'), 3000);
-  await _refreshAllClusters();
-  clearTimeout(barTimeout);
-  grid.classList.remove('grid-loading');
-
-  // 3) Prefetch logs for visible running jobs, then async-fetch progress.
   _saveProgressCache();
   prefetchAndUpdateProgress(allData);
-}
-
-async function _refreshAllClusters() {
-  return _refreshClusters(Object.keys(CLUSTERS));
 }
 
 async function _forceRefreshAll() {
   const grid = document.getElementById('grid');
   grid.classList.add('grid-loading');
   const promises = Object.keys(CLUSTERS).map(name =>
-    fetchWithTimeout(`/api/jobs/${name}?force=1`)
-      .then(r => r.json())
-      .then(data => {
-        if (data.status === 'ok') allData[name] = data;
-        _fillMissing();
-        _scheduleRender();
-      })
-      .catch(() => {})
+    fetch(`/api/force_poll/${name}`, { method: 'POST' }).catch(() => {})
   );
   await Promise.allSettled(promises);
+  _lastEtag = null;
+  await new Promise(r => setTimeout(r, 2000));
+  await _doFetchAll();
   grid.classList.remove('grid-loading');
-  _persistAllData();
-  _saveProgressCache();
-  prefetchAndUpdateProgress(allData);
-}
-
-async function _refreshClusters(names) {
-  const failed = [];
-  const promises = names.map(name =>
-    fetchWithTimeout(`/api/jobs/${name}`)
-      .then(r => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then(data => {
-        const prev = allData[name];
-        const prevOk = prev && prev.status === 'ok' && prev.jobs && prev.jobs.length;
-        if (data.status !== 'ok' && prevOk) { failed.push(name); return; }
-        if (!data.updated && prevOk) return;
-        if (prev && prev.updated && data.updated && data.updated < prev.updated) return;
-        allData[name] = data;
-        _fillMissing();
-        _scheduleRender();
-      })
-      .catch(err => { failed.push(name); console.warn('Cluster refresh failed:', name, err); })
-  );
-  await Promise.allSettled(promises);
-  _persistAllData();
-  if (failed.length) {
-    const s = failed.length === 1
-      ? `${failed[0]} unreachable`
-      : `${failed.length} clusters unreachable (${failed.join(', ')})`;
-    _setErrorBanner('clusters', s + ' — retrying');
-  } else {
-    _clearErrorBannerKey('clusters');
-    _clearErrorBannerKey('jobs');
-  }
 }
 
 function _fillMissing() {
@@ -1053,14 +1029,21 @@ async function refreshCluster(name, force) {
   }
   grid.classList.add('grid-loading');
   try {
-    const url = force ? `/api/jobs/${name}?force=1` : `/api/jobs/${name}`;
-    const res = await fetchWithTimeout(url);
-    const data = await res.json();
-    if (force || data.status === 'ok') {
-      allData[name] = data;
+    if (force) {
+      await fetch(`/api/force_poll/${name}`, { method: 'POST' });
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    _lastEtag = null;
+    const res = await fetchWithTimeout('/api/jobs');
+    if (res.ok) {
+      _lastEtag = res.headers.get('ETag');
+      const fresh = await res.json();
+      if (Object.values(fresh).some(d => d.updated)) {
+        allData = fresh;
+        _fillMissing();
+      }
     }
     _scheduleRender();
-    prefetchAndUpdateProgress({ [name]: data });
   } catch (e) {
     toast(`Failed to refresh ${name}`, 'error');
   } finally {

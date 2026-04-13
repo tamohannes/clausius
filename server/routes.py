@@ -49,13 +49,11 @@ from .logs import (
     read_jsonl_index, read_jsonl_record,
 )
 from .jobs import (
-    refresh_all_clusters, refresh_cluster, _is_cache_fresh,
-    schedule_prefetch, prefetch_cluster_bulk, fetch_est_start_bulk,
-    fetch_team_usage, fetch_team_jobs,
-    get_job_stats_cached, fetch_run_metadata_sync,
+    schedule_prefetch,
+    get_job_stats_cached,
     create_run_on_demand,
-    _last_polled,
 )
+from .poller import get_poller, get_version
 from .db import get_run_with_jobs
 
 api = Blueprint("api", __name__)
@@ -194,7 +192,12 @@ def index():
 
 @api.route("/api/jobs")
 def api_jobs():
-    refresh_all_clusters()
+    from flask import Response
+
+    version = get_version()
+    etag = f'"{version}"'
+    if request.headers.get("If-None-Match") == etag:
+        return Response(status=304)
 
     board, states = get_live_board()
 
@@ -293,10 +296,15 @@ def api_jobs():
             schedule_prefetch(c, j.get("jobid"))
 
     mounts = all_mount_status()
+    poller_status = get_poller().get_status()
     for c, d in ordered.items():
         if c != "local":
             d["mount"] = mounts.get(c, {"mounted": False, "root": ""})
-    return jsonify(ordered)
+        d["poller"] = poller_status.get(c, {})
+    resp = jsonify(ordered)
+    resp.headers["ETag"] = etag
+    resp.headers["Cache-Control"] = "no-cache"
+    return resp
 
 
 @api.route("/api/mounts")
@@ -427,8 +435,7 @@ def api_jobs_cluster(cluster):
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     if request.args.get("force") == "1":
-        _last_polled[cluster] = 0.0
-    refresh_cluster(cluster)
+        get_poller().request_priority(cluster)
 
     jobs, st = get_live_jobs_for_cluster(cluster)
     data = {
@@ -496,41 +503,17 @@ def api_jobs_cluster(cluster):
 
 @api.route("/api/prefetch_visible", methods=["POST"])
 def api_prefetch_visible():
+    """Accept prefetch hints — the background poller handles actual SSH work."""
     payload = request.get_json(silent=True) or {}
     jobs = payload.get("jobs", [])
-    by_cluster = {}
-    pending_by_cluster = {}
+    clusters = set()
+    valid = 0
     for item in jobs:
         c = item.get("cluster")
-        jid = str(item.get("job_id", "")).strip()
-        if not c or not jid or c not in CLUSTERS:
-            continue
-        if item.get("state", "").upper() == "PENDING":
-            pending_by_cluster.setdefault(c, []).append(jid)
-        else:
-            by_cluster.setdefault(c, []).append(jid)
-
-    def _run():
-        threads = []
-        for c, ids in by_cluster.items():
-            t = threading.Thread(target=prefetch_cluster_bulk, args=(c, ids), daemon=True)
-            threads.append(t)
-            t.start()
-        for c, ids in pending_by_cluster.items():
-            t = threading.Thread(target=fetch_est_start_bulk, args=(c, ids), daemon=True)
-            threads.append(t)
-            t.start()
-        team_clusters = set(pending_by_cluster.keys())
-        for c in team_clusters:
-            t = threading.Thread(target=fetch_team_usage, args=(c,), daemon=True)
-            threads.append(t)
-            t.start()
-        for t in threads:
-            t.join(timeout=25)
-
-    threading.Thread(target=_run, daemon=True).start()
-    total = sum(len(v) for v in by_cluster.values()) + sum(len(v) for v in pending_by_cluster.values())
-    return jsonify({"status": "ok", "clusters": list(set(list(by_cluster.keys()) + list(pending_by_cluster.keys()))), "jobs": total})
+        if c and c in CLUSTERS:
+            clusters.add(c)
+            valid += 1
+    return jsonify({"status": "ok", "clusters": list(clusters), "jobs": valid})
 
 
 @api.route("/api/progress", methods=["POST"])
@@ -577,14 +560,13 @@ def api_progress():
 
 @api.route("/api/team_usage", methods=["POST"])
 def api_team_usage():
-    """Return team GPU usage from DB cache; refresh stale clusters in background."""
+    """Return team GPU usage from cache/DB only — poller refreshes data."""
     payload = request.get_json(silent=True) or {}
     cluster_list = payload.get("clusters", [])
     if not cluster_list:
         cluster_list = [c for c in CLUSTERS if c != "local"]
 
     results = {}
-    stale_clusters = []
     for c in cluster_list:
         if c not in CLUSTERS or c == "local":
             continue
@@ -595,17 +577,6 @@ def api_team_usage():
             db_val = cache_db_get("team_usage", c)
             if db_val:
                 results[c] = db_val
-            else:
-                stale_clusters.append(c)
-
-    if stale_clusters:
-        def _bg():
-            for c in stale_clusters:
-                try:
-                    fetch_team_usage(c)
-                except Exception:
-                    pass
-        threading.Thread(target=_bg, daemon=True).start()
 
     from .config import TEAM_GPU_ALLOC
     return jsonify({"status": "ok", "team_usage": results, "team_gpu_allocations": dict(TEAM_GPU_ALLOC)})
@@ -613,11 +584,7 @@ def api_team_usage():
 
 @api.route("/api/team_jobs")
 def api_team_jobs():
-    """Fetch per-job breakdown for team members across all PPP accounts.
-
-    Returns cached data immediately for clusters that have it, and kicks off
-    background refreshes for stale clusters. Never blocks on SSH.
-    """
+    """Return cached team job data — poller refreshes in background."""
     from .jobs import _team_jobs_cache, TEAM_JOBS_TTL_SEC
     cluster_filter = request.args.get("cluster", "")
     if cluster_filter:
@@ -626,26 +593,12 @@ def api_team_jobs():
         cluster_list = [c for c in CLUSTERS if c != "local"]
 
     results = {}
-    stale = []
     for c in cluster_list:
         if c not in CLUSTERS or c == "local":
             continue
         cached = _cache_get(_team_jobs_cache, c, TEAM_JOBS_TTL_SEC)
         if cached is not None:
             results[c] = cached
-        else:
-            stale.append(c)
-
-    if stale:
-        def _bg():
-            for c in stale:
-                try:
-                    r = fetch_team_jobs(c)
-                    if r:
-                        results[c] = r
-                except Exception:
-                    pass
-        threading.Thread(target=_bg, daemon=True).start()
 
     return jsonify({"status": "ok", "clusters": results})
 
@@ -748,20 +701,16 @@ def api_run_script(cluster):
 
 @api.route("/api/stats/<cluster>/<job_id>")
 def api_stats(cluster, job_id):
+    """Return cached stats — poller refreshes running job stats periodically."""
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     from .jobs import get_stats_snapshots
 
     db_val, is_fresh = cache_db_get_stale("stats", f"{cluster}:{job_id}")
-    if db_val and is_fresh and not db_val.get("_partial"):
-        result = db_val
-    elif db_val and not is_fresh:
+    if db_val:
         result = dict(db_val)
-        result["_stale"] = True
-        threading.Thread(
-            target=lambda: get_job_stats_cached(cluster, job_id, force=True),
-            daemon=True,
-        ).start()
+        if not is_fresh:
+            result["_stale"] = True
     else:
         result = get_job_stats_cached(cluster, job_id)
 
@@ -975,11 +924,7 @@ def api_run_info(cluster, root_job_id):
         if not run:
             return jsonify({"status": "error", "error": "Run not found"}), 404
     if not run.get("meta_fetched"):
-        threading.Thread(
-            target=fetch_run_metadata_sync,
-            args=(cluster, run["root_job_id"]),
-            daemon=True,
-        ).start()
+        pass
     for j in run.get("jobs", []):
         if not j.get("project"):
             j["project"] = extract_project(j.get("job_name") or j.get("name") or "")
@@ -1345,14 +1290,25 @@ def api_jsonl_record(cluster, job_id):
         return jsonify({"status": "error", "error": str(e)})
 
 
+@api.route("/api/force_poll/<cluster>", methods=["POST"])
+def api_force_poll(cluster):
+    """Signal the poller to poll a cluster immediately."""
+    if cluster not in CLUSTERS:
+        return jsonify({"status": "error", "error": "Unknown cluster"}), 404
+    get_poller().request_priority(cluster)
+    return jsonify({"status": "queued"})
+
+
 @api.route("/api/health")
 def api_health():
-    """Lightweight health check with circuit breaker and load status."""
+    """Lightweight health check with circuit breaker, poller, and load status."""
     return jsonify({
         "status": "ok",
         "active_requests": _active_requests,
         "max_active": _MAX_ACTIVE,
         "circuit_breakers": get_circuit_breaker_status(),
+        "poller": get_poller().get_status(),
+        "board_version": get_version(),
     })
 
 
@@ -1409,7 +1365,7 @@ def api_settings_post():
 
 from .cluster_dashboard import get_cluster_utilization
 from .config import DASHBOARD_URL as _DASHBOARD_URL
-from .storage_quota import fetch_storage_quota
+from .storage_quota import fetch_storage_quota  # noqa: used only as SSH fallback if needed
 
 
 @api.route("/api/user_avatar")
@@ -1442,19 +1398,13 @@ def api_user_avatar():
 
 @api.route("/api/storage_quota/<cluster>")
 def api_storage_quota(cluster):
+    """Return cached storage quota — poller refreshes periodically."""
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     db_val, is_fresh = cache_db_get_stale("storage_quota", cluster)
-    if db_val and is_fresh:
-        return jsonify(db_val)
     if db_val:
-        threading.Thread(
-            target=lambda: fetch_storage_quota(cluster),
-            daemon=True,
-        ).start()
         return jsonify(db_val)
-    data = fetch_storage_quota(cluster)
-    return jsonify(data)
+    return jsonify({"status": "ok", "quotas": [], "cluster": cluster})
 
 
 @api.route("/api/cluster_utilization")
@@ -1473,28 +1423,24 @@ from .partitions import get_partitions as _get_partitions, get_all_partitions, g
 
 @api.route("/api/partitions")
 def api_partitions_all():
-    force = request.args.get("force", "0") == "1"
+    """Return cached partition data — poller refreshes periodically."""
     data = get_all_partitions_cached()
-    if force:
-        threading.Thread(target=lambda: get_all_partitions(force=True), daemon=True).start()
     return jsonify({"status": "ok", "clusters": data})
 
 
 @api.route("/api/partitions/<cluster>")
 def api_partitions_cluster(cluster):
+    """Return cached partition data for a cluster."""
     if cluster not in CLUSTERS:
         return jsonify({"status": "error", "error": "Unknown cluster"}), 404
     if cluster == "local":
         return jsonify({"status": "error", "error": "No partitions for local"}), 400
-    force = request.args.get("force", "0") == "1"
     data = _get_partitions(cluster, force=False)
-    if force:
-        threading.Thread(target=lambda: _get_partitions(cluster, force=True), daemon=True).start()
     if data is None:
         db_data = cache_db_get("partitions", cluster)
         if db_data:
             return jsonify({"status": "ok", "cluster": cluster, "partitions": db_data})
-        return jsonify({"status": "error", "error": f"Could not fetch partitions from {cluster}"}), 502
+        return jsonify({"status": "ok", "cluster": cluster, "partitions": []})
     return jsonify({"status": "ok", "cluster": cluster, "partitions": data})
 
 

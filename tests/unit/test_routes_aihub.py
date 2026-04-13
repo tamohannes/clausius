@@ -63,10 +63,10 @@ class TestAihubUsersRoute:
 class TestTeamJobsRoute:
     @pytest.mark.unit
     def test_team_jobs_returns_ok(self, client, monkeypatch):
-        monkeypatch.setattr(
-            "server.routes.fetch_team_jobs",
-            lambda c: {"jobs": [], "summary": {"by_user": {}, "total_running": 0, "total_pending": 0, "total_dependent": 0}}
-        )
+        from server.config import _cache_set
+        from server.jobs import _team_jobs_cache
+        _cache_set(_team_jobs_cache, "mock-cluster",
+                   {"jobs": [], "summary": {"by_user": {}, "total_running": 0, "total_pending": 0, "total_dependent": 0}})
         resp = client.get("/api/team_jobs?cluster=mock-cluster")
         data = resp.get_json()
         assert data["status"] == "ok"
