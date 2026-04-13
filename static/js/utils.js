@@ -104,16 +104,8 @@ function isUnneededBackup(job, groupJobs) {
   if (!st.includes('FAIL')) return false;
   const deps = job.dep_details || [];
   const hasBackupDep = deps.some(d => d.type === 'afterany' || d.type === 'afternotok');
-  if (!hasBackupDep) {
-    const siblings = groupJobs.filter(s => s.name === job.name && s.jobid !== job.jobid);
-    if (!siblings.length) return false;
-    const hasCompleted = siblings.some(s => (s.state || '').toUpperCase().startsWith('COMPLETED'));
-    const jid = parseInt(job.jobid, 10);
-    const hasLowerCompleted = siblings.some(s =>
-      (s.state || '').toUpperCase().startsWith('COMPLETED') && parseInt(s.jobid, 10) < jid
-    );
-    return hasLowerCompleted;
-  }
+  if (!hasBackupDep) return false;
+  
   const byId = {};
   for (const j of groupJobs) byId[j.jobid] = j;
   for (const d of deps) {
@@ -333,22 +325,6 @@ function classifyBackupJob(job, byId) {
     return 'standby';
   }
 
-  // Heuristic fallback: no dep_details but same-name completed siblings.
-  const siblings = Object.values(byId).filter(
-    s => s.name === job.name && s.jobid !== job.jobid
-  );
-  if (!siblings.length) return null;
-
-  const hasCompleted = siblings.some(
-    s => (s.state || '').toUpperCase().startsWith('COMPLETED')
-  );
-  const hasRunning = siblings.some(s => {
-    const ss = (s.state || '').toUpperCase();
-    return ss === 'RUNNING' || ss === 'COMPLETING';
-  });
-
-  if (hasCompleted && !hasRunning) return 'dormant';
-  if (hasRunning) return 'standby';
   return null;
 }
 
@@ -379,29 +355,6 @@ function buildBackupInfo(groupJobs, byId) {
         backupMap[d.job_id].push(j);
         parentOf[j.jobid] = d.job_id;
         break;
-      }
-    }
-    if (parentOf[j.jobid]) continue;
-
-    // Heuristic: same-name completed/running sibling with closest lower ID.
-    if (classifyBackupJob(j, byId)) {
-      const jid = parseInt(j.jobid, 10);
-      let best = null, bestDist = Infinity;
-      for (const s of groupJobs) {
-        if (s.jobid === j.jobid || s.name !== j.name) continue;
-        const sid = parseInt(s.jobid, 10);
-        if (sid < jid && (jid - sid) < bestDist) {
-          const ss = (s.state || '').toUpperCase();
-          if (ss.startsWith('COMPLETED') || ss === 'RUNNING' || ss === 'COMPLETING') {
-            best = s.jobid;
-            bestDist = jid - sid;
-          }
-        }
-      }
-      if (best) {
-        if (!backupMap[best]) backupMap[best] = [];
-        backupMap[best].push(j);
-        parentOf[j.jobid] = best;
       }
     }
   }

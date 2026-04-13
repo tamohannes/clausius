@@ -1578,12 +1578,45 @@ def _prefetch_job_data(cluster, job_id):
     enable_standalone_ssh()
     try:
         try:
-            log_result = get_job_log_files(cluster, job_id)
-            if log_result and not log_result.get("error"):
-                _cache_set(_log_index_cache, (cluster, job_id), log_result)
-            files = (log_result or {}).get("files", [])
-            if files:
-                _extract_progress_with_source(cluster, job_id, files)
+            # Fast path: use db log_path and local mount to avoid expensive log discovery
+            from .logs import _db_log_path, tail_local_file
+            from .mounts import resolve_mounted_path
+            db_path = _db_log_path(cluster, job_id)
+            fast_pct = None
+            if db_path:
+                mt = resolve_mounted_path(cluster, db_path, want_dir=False)
+                if mt and os.path.isfile(mt):
+                    content = tail_local_file(mt, lines=220)
+                    if content and not any(content.startswith(p) for p in _LOG_ERROR_PREFIXES):
+                        _cache_set(_log_content_cache, (cluster, job_id, db_path), content)
+                    fast_pct = extract_progress(content)
+                    crash = detect_crash(content)
+                    
+                    if crash is not None:
+                        _cache_set(_crash_cache, (cluster, job_id), crash)
+                        try:
+                            cache_db_put("crash", f"{cluster}:{job_id}", crash, CRASH_TTL_SEC)
+                        except Exception:
+                            pass
+                    
+                    if fast_pct is not None:
+                        _cache_set(_progress_cache, (cluster, job_id), fast_pct)
+                        src = "main output"
+                        _cache_set(_progress_source_cache, (cluster, job_id), src)
+                        try:
+                            cache_db_put("progress", f"{cluster}:{job_id}", fast_pct, PROGRESS_TTL_SEC)
+                            cache_db_put("progress_source", f"{cluster}:{job_id}", src, PROGRESS_TTL_SEC)
+                        except Exception:
+                            pass
+            
+            # If fast path failed to find progress, fall back to discovering all log files
+            if fast_pct is None:
+                log_result = get_job_log_files(cluster, job_id)
+                if log_result and not log_result.get("error"):
+                    _cache_set(_log_index_cache, (cluster, job_id), log_result)
+                files = (log_result or {}).get("files", [])
+                if files:
+                    _extract_progress_with_source(cluster, job_id, files)
         except Exception:
             pass
         try:
