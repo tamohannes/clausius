@@ -23,13 +23,13 @@ from .mounts import (
 
 from .crash_detect import detect_crash, detect_soft_failure  # noqa: F401 — re-exported for consumers
 
-_PROGRESS_RE = re.compile(r'(\d{1,3})%(?:\||$|\s)', re.MULTILINE)
+_PROGRESS_RE = re.compile(r'(?<![\d\.])(\d{1,3})%(?:\||$|\s)', re.MULTILINE)
 
 
 def extract_progress(content):
     if not content:
         return None
-    matches = _PROGRESS_RE.findall(content[-4096:])
+    matches = _PROGRESS_RE.findall(content)
     if matches:
         pct = int(matches[-1])
         if 0 <= pct <= 100:
