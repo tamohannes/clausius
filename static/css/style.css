@@ -874,6 +874,42 @@ tr.group-bg-3:hover td { background: var(--group-hover); }
   padding: 5px 10px; border-bottom: 1px solid var(--row-border);
 }
 
+/* ── Run star + notes ── */
+.run-star-row {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 14px;
+}
+.run-star-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 20px; line-height: 1; padding: 2px;
+  color: var(--muted); transition: color 0.15s, transform 0.15s;
+}
+.run-star-btn:hover { transform: scale(1.2); }
+.run-star-btn.active { color: #f5a623; }
+.run-notes-wrap {
+  flex: 1; position: relative;
+}
+.run-notes-textarea {
+  width: 100%; min-height: 36px; max-height: 200px;
+  resize: vertical; box-sizing: border-box;
+  font-family: var(--mono); font-size: 11px; line-height: 1.5;
+  padding: 8px 10px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface2); color: var(--text);
+  transition: border-color 0.15s;
+}
+.run-notes-textarea::placeholder { color: var(--muted); }
+.run-notes-textarea:focus { outline: none; border-color: var(--accent); }
+.run-notes-saved {
+  position: absolute; right: 8px; top: 8px;
+  font-family: var(--mono); font-size: 9px; color: var(--muted);
+  opacity: 0; transition: opacity 0.3s;
+}
+.run-notes-saved.show { opacity: 1; }
+.star-indicator {
+  color: #f5a623; font-size: 11px; margin-right: 2px;
+  pointer-events: none; display: inline;
+}
+
 /* ── History view ── */
 .history-view { display: none; }
 .history-view.active { display: block; overflow-y: auto; flex: 1; min-height: 0; }

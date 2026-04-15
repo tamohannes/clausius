@@ -35,6 +35,8 @@ function closeRunInfoDirect() {
   _runOverlayOpen = false;
 }
 
+let _runNoteTimer = null;
+
 function _renderRunBody(run, cluster) {
   const body = document.getElementById('run-body');
   const jobs = run.jobs || [];
@@ -46,7 +48,25 @@ function _renderRunBody(run, cluster) {
   const uniqueNodes = run.unique_nodes;
   const gpusPerNode = run.gpus_per_node;
 
+  const starred = run.starred ? 1 : 0;
+  const notes = run.notes || '';
+  const runId = run.id;
+
   let html = '';
+
+  html += `<div class="run-star-row">
+    <button class="run-star-btn${starred ? ' active' : ''}" id="run-star-btn"
+            onclick="_toggleRunStar(${runId})" title="Star this run">
+      ${starred ? '★' : '☆'}
+    </button>
+    <div class="run-notes-wrap">
+      <textarea class="run-notes-textarea" id="run-notes-textarea"
+                placeholder="Add notes about this run…"
+                oninput="_onRunNoteInput(${runId})"
+                onblur="_saveRunNotes(${runId})">${_escHtml(notes)}</textarea>
+      <span class="run-notes-saved" id="run-notes-saved">saved</span>
+    </div>
+  </div>`;
 
   html += `<div class="run-timing">
     <div class="run-timing-item">
@@ -236,6 +256,46 @@ function _formatDuration(start, end) {
   if (hours > 0) return `${hours}h ${mins}m ${secs}s`;
   if (mins > 0) return `${mins}m ${secs}s`;
   return `${secs}s`;
+}
+
+async function _toggleRunStar(runId) {
+  const btn = document.getElementById('run-star-btn');
+  if (!btn) return;
+  const wasStarred = btn.classList.contains('active');
+  const newVal = wasStarred ? 0 : 1;
+  btn.classList.toggle('active', !!newVal);
+  btn.textContent = newVal ? '★' : '☆';
+  try {
+    await fetch(`/api/run/${runId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({starred: newVal}),
+    });
+  } catch (_) {}
+}
+
+function _onRunNoteInput(runId) {
+  if (_runNoteTimer) clearTimeout(_runNoteTimer);
+  _runNoteTimer = setTimeout(() => _saveRunNotes(runId), 1500);
+}
+
+async function _saveRunNotes(runId) {
+  if (_runNoteTimer) { clearTimeout(_runNoteTimer); _runNoteTimer = null; }
+  const ta = document.getElementById('run-notes-textarea');
+  if (!ta) return;
+  const notes = ta.value;
+  try {
+    await fetch(`/api/run/${runId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({notes}),
+    });
+    const badge = document.getElementById('run-notes-saved');
+    if (badge) {
+      badge.classList.add('show');
+      setTimeout(() => badge.classList.remove('show'), 1200);
+    }
+  } catch (_) {}
 }
 
 async function retryMetadata(cluster, rootJobId) {

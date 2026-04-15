@@ -169,6 +169,13 @@ def init_db():
             UNIQUE(cluster, root_job_id)
         )
     """)
+    for col, default in [("starred", "INTEGER DEFAULT 0"),
+                         ("notes", "TEXT DEFAULT ''")]:
+        try:
+            con.execute(f"ALTER TABLE runs ADD COLUMN {col} {default}")
+        except Exception:
+            pass
+
     con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_board ON job_history(cluster, board_visible)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_jh_cluster_ended ON job_history(cluster, ended_at)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_jh_project ON job_history(project)")
@@ -710,7 +717,8 @@ def get_history(
             params.append(cutoff)
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
     query = (
-        "SELECT jh.*, COALESCE(r.run_name, '') AS run_name "
+        "SELECT jh.*, COALESCE(r.run_name, '') AS run_name, "
+        "COALESCE(r.starred, 0) AS starred "
         "FROM job_history jh "
         "LEFT JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster "
         f"{where} {order}"
@@ -804,6 +812,22 @@ def update_run_meta(run_id, batch_script="", scontrol_raw="", env_vars="", conda
             WHERE id = ?
         """, (batch_script, scontrol_raw, env_vars, conda_state,
               1 if has_data else 0, run_id))
+
+
+def update_run_fields(run_id, starred=None, notes=None):
+    """Partial update of user-editable run fields (starred, notes)."""
+    sets, params = [], []
+    if starred is not None:
+        sets.append("starred = ?")
+        params.append(int(starred))
+    if notes is not None:
+        sets.append("notes = ?")
+        params.append(notes)
+    if not sets:
+        return
+    params.append(run_id)
+    with db_write() as con:
+        con.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", params)
 
 
 def update_run_times(run_id, started_at=None, ended_at=None):

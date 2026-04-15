@@ -199,8 +199,9 @@ function _renderHistPage() {
       const chevronHtml = showChevron ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, g.cluster);
+      const starHtml = rootJob.starred ? '<span class="star-indicator">★</span>' : '';
       const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')`;
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}</span></span>`;
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${starHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}</span></span>`;
       html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
     }
 

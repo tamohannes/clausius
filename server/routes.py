@@ -58,7 +58,7 @@ from .jobs import (
     fetch_team_usage,
 )
 from .poller import get_poller, get_version, touch_demand
-from .db import get_run_with_jobs
+from .db import get_run_with_jobs, update_run_fields
 from .board import build_board_snapshot, build_cluster_board_entry, _fill_output_dirs
 
 api = Blueprint("api", __name__)
@@ -81,7 +81,7 @@ _HEAVY_PREFIXES = (
     "/api/jsonl_index/", "/api/jsonl_record/", "/api/ls/",
     "/api/cancel_jobs/", "/api/cancel/",
     "/api/force_poll/", "/api/run_script/", "/api/stats/",
-    "/api/mount/", "/api/run_info/", "/api/cleanup"
+    "/api/mount/", "/api/run_info/", "/api/run/", "/api/cleanup"
 )
 
 
@@ -943,6 +943,18 @@ def api_retry_run_meta(cluster, root_job_id):
         db.execute("UPDATE runs SET meta_fetched=0 WHERE cluster=? AND root_job_id=?", (cluster, str(root_job_id)))
     _capture_run_metadata(cluster, str(root_job_id), run["id"])
     return api_run_info(cluster, root_job_id)
+
+
+@api.route("/api/run/<int:run_id>", methods=["PATCH"])
+def api_update_run(run_id):
+    """Partial update of user-editable run fields (starred, notes)."""
+    data = request.get_json(force=True, silent=True) or {}
+    starred = data.get("starred")
+    notes = data.get("notes")
+    if starred is None and notes is None:
+        return jsonify({"status": "error", "error": "No fields to update"}), 400
+    update_run_fields(run_id, starred=starred, notes=notes)
+    return jsonify({"status": "ok"})
 
 
 @api.route("/api/history")

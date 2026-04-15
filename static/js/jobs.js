@@ -485,7 +485,8 @@ function renderCard(name, data) {
       const chevronHtml = `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>`;
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, name);
-      const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${attemptBadge}${_projBadge} ${summaryHtml}</span>`;
+      const starHtml = rootJob.starred ? '<span class="star-indicator">★</span>' : '';
+      const groupLabel = `<span>${chevronHtml}${donutHtml}${starHtml}${runBadge}${attemptBadge}${_projBadge} ${summaryHtml}</span>`;
 
       const jobNames = groupJobs.map(j => j.name || '');
       const jnHL = computeNameHighlight(jobNames);

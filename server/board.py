@@ -48,6 +48,7 @@ def _load_board_overlays():
 def _fill_run_ids(cluster, jobs):
     need = [j for j in jobs if not j.get("run_id") and not j.get("_pinned")]
     if not need:
+        _fill_starred(cluster, jobs)
         return
     jid_map = {}
     for job in need:
@@ -55,6 +56,7 @@ def _fill_run_ids(cluster, jobs):
         if jid:
             jid_map.setdefault(jid, []).append(job)
     if not jid_map:
+        _fill_starred(cluster, jobs)
         return
     con = get_db()
     placeholders = ",".join("?" for _ in jid_map)
@@ -68,6 +70,30 @@ def _fill_run_ids(cluster, jobs):
             continue
         for job in jid_map.get(row["job_id"], []):
             job["run_id"] = row["run_id"]
+    _fill_starred(cluster, jobs)
+
+
+def _fill_starred(cluster, jobs):
+    """Copy starred flag from runs table onto each job that has a run_id."""
+    run_ids = set()
+    for j in jobs:
+        rid = j.get("run_id")
+        if rid:
+            run_ids.add(int(rid))
+    if not run_ids:
+        return
+    con = get_db()
+    placeholders = ",".join("?" for _ in run_ids)
+    rows = con.execute(
+        f"SELECT id, starred FROM runs WHERE id IN ({placeholders})",
+        list(run_ids),
+    ).fetchall()
+    con.close()
+    star_map = {row["id"]: row["starred"] for row in rows}
+    for j in jobs:
+        rid = j.get("run_id")
+        if rid and int(rid) in star_map:
+            j["starred"] = star_map[int(rid)]
 
 
 _STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)
