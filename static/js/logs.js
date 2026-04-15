@@ -16,6 +16,7 @@ async function openLog(cluster, jobId, jobName, force) {
   _exCluster = cluster;
   _exJobId = jobId;
   _currentFilePath = null;
+  stopLive();
 
   document.getElementById('modal-overlay').classList.add('open');
   if (jobName) document.getElementById('modal-title').textContent = jobName;
@@ -78,7 +79,6 @@ async function openLog(cluster, jobId, jobName, force) {
         sourceEl.textContent = `source: ${_currentSource}`;
         sourceEl.className = `source-pill ${_currentSource}`;
         _liveLastHash = data.first_hash || null;
-        startLive();
       } else {
         await viewFile(first.path);
       }
@@ -873,6 +873,7 @@ function fmtSize(bytes) {
 
 async function viewFile(path, force) {
   force = !!force;
+  const shouldResumeLive = _liveActive;
   stopLive();
   _currentFilePath = path;
   _currentRemotePath = path;
@@ -926,7 +927,7 @@ async function viewFile(path, force) {
       document.getElementById('content-path').textContent = `${path}  ->  ${_currentResolvedPath}`;
     }
     el.parentElement.scrollTop = el.parentElement.scrollHeight;
-    startLive();
+    if (shouldResumeLive) startLive();
   } catch (e) {
     const el = document.getElementById('modal-content');
     el.className = 'log-content';

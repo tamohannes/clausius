@@ -4,11 +4,10 @@
  * Run with: npx vitest run tests/frontend/logs.test.ts
  */
 
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import { loadBrowserScripts } from './helpers';
 
-beforeAll(() => {
-  // Provide DOM elements that logs.js and its dependencies need
+function renderDom() {
   document.body.innerHTML = `
     <script id="cluster-data" type="application/json">{"local":{"host":null,"gpu_type":"local"}}</script>
     <div id="modal-overlay"></div>
@@ -16,6 +15,7 @@ beforeAll(() => {
     <div id="modal-subtitle"></div>
     <div id="content-path"></div>
     <div id="content-source"></div>
+    <button id="live-toggle"></button>
     <div id="modal-content"></div>
     <div id="tree-pane"></div>
     <div id="tree-splitter"></div>
@@ -32,8 +32,21 @@ beforeAll(() => {
     <div id="exp-pagination"></div>
     <div id="settings-overlay"></div>
   `;
+}
 
+beforeAll(() => {
+  // Provide DOM elements that logs.js and its dependencies need
+  renderDom();
   loadBrowserScripts(['utils.js', 'crash_detect.js', 'logs.js']);
+});
+
+beforeEach(() => {
+  renderDom();
+  vi.restoreAllMocks();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 declare const escapeHtml: (s: string) => string;
@@ -43,6 +56,8 @@ declare const jsonlRecordSummary: (obj: any) => string;
 declare const guessIcon: (name: string) => string;
 declare const markdownToHtml: (raw: string) => string;
 declare const renderFileContentByType: (path: string, raw: string) => { cls: string; html: string };
+declare const openLog: (cluster: string, jobId: string, jobName?: string, force?: boolean) => Promise<void>;
+declare const toggleLive: () => void;
 
 describe('escapeHtml', () => {
   it('escapes angle brackets', () => {
@@ -142,5 +157,48 @@ describe('renderFileContentByType', () => {
   it('renders log files with highlights', () => {
     const { html } = renderFileContentByType('output.log', 'some log line');
     expect(html).toContain('log-line');
+  });
+});
+
+describe('live log viewer defaults', () => {
+  it('keeps live off by default until the user enables it', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({
+        json: async () => ({
+          files: [{ path: '/remote/output.log', label: 'main log' }],
+          dirs: [],
+          first_content: 'hello from mount',
+          first_source: 'mount',
+          first_resolved_path: '/mnt/output.log',
+          first_hash: 'abc123',
+        }),
+      })
+      .mockResolvedValue({
+        json: async () => ({
+          status: 'ok',
+          content: 'updated content',
+          source: 'mount',
+          resolved_path: '/mnt/output.log',
+          hash: 'def456',
+        }),
+      });
+
+    (globalThis as any).fetchWithTimeout = fetchMock;
+
+    await openLog('h100', '123', 'demo job');
+    expect(document.getElementById('live-toggle')?.classList.contains('active')).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    toggleLive();
+    expect(document.getElementById('live-toggle')?.classList.contains('active')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(String(fetchMock.mock.calls[1][0])).toContain('/api/log/h100/123');
+    expect(String(fetchMock.mock.calls[1][0])).toContain('force=1');
   });
 });
