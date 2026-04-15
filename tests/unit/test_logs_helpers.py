@@ -6,12 +6,14 @@ import pytest
 
 from server.logs import (
     extract_progress,
+    get_job_log_files,
     label_log,
     label_and_sort_files,
     _extract_arg_value,
     read_jsonl_index,
     read_jsonl_record,
 )
+from server.db import upsert_job
 
 
 class TestExtractProgress:
@@ -179,3 +181,68 @@ class TestReadJsonlRecord:
     def test_missing_file(self):
         result = read_jsonl_record("/nonexistent/path.jsonl", 0)
         assert result["status"] == "error"
+
+
+class TestMountedLogDiscovery:
+    @pytest.mark.unit
+    def test_returns_mounted_output_dirs_without_ssh(self, db_path, tmp_path, monkeypatch, mock_cluster):
+        run_dir = tmp_path / "run"
+        log_dir = run_dir / "logs"
+        eval_results = run_dir / "eval-results"
+        log_dir.mkdir(parents=True)
+        eval_results.mkdir()
+
+        upsert_job(mock_cluster, {
+            "jobid": "123",
+            "name": "demo_eval",
+            "state": "COMPLETED",
+            "log_path": "/remote/run/logs/slurm-123.out",
+        })
+
+        mapping = {
+            "/remote/run/logs": str(log_dir),
+            "/remote/run": str(run_dir),
+            "/remote/run/eval-results": str(eval_results),
+        }
+        monkeypatch.setattr("server.logs.resolve_mounted_path", lambda cluster, path, want_dir=False: mapping.get(path, ""))
+        monkeypatch.setattr(
+            "server.logs.ssh_run_with_timeout",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ssh should not be used")),
+        )
+
+        result = get_job_log_files(mock_cluster, "123")
+
+        assert result["files"] == []
+        assert {d["path"] for d in result["dirs"]} == {"/remote/run", "/remote/run/eval-results"}
+
+    @pytest.mark.unit
+    def test_discovers_eval_logs_files_from_mount_without_ssh(self, db_path, tmp_path, monkeypatch, mock_cluster):
+        run_dir = tmp_path / "run"
+        log_dir = run_dir / "logs"
+        eval_logs = run_dir / "eval-logs"
+        log_dir.mkdir(parents=True)
+        eval_logs.mkdir()
+        (eval_logs / "main_123_srun.log").write_text("mounted log")
+
+        upsert_job(mock_cluster, {
+            "jobid": "123",
+            "name": "demo_eval",
+            "state": "COMPLETED",
+            "log_path": "/remote/run/logs/slurm-123.out",
+        })
+
+        mapping = {
+            "/remote/run/logs": str(log_dir),
+            "/remote/run": str(run_dir),
+            "/remote/run/eval-logs": str(eval_logs),
+        }
+        monkeypatch.setattr("server.logs.resolve_mounted_path", lambda cluster, path, want_dir=False: mapping.get(path, ""))
+        monkeypatch.setattr(
+            "server.logs.ssh_run_with_timeout",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("ssh should not be used")),
+        )
+
+        result = get_job_log_files(mock_cluster, "123")
+
+        assert any(f["path"] == "/remote/run/eval-logs/main_123_srun.log" for f in result["files"])
+        assert any(f["label"] == "main output" for f in result["files"])

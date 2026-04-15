@@ -10,7 +10,7 @@ import time
 from glob import glob
 
 from .config import (
-    APP_ROOT, CLUSTERS, LOG_SEARCH_BASES,
+    APP_ROOT, CLUSTERS, LOG_SEARCH_BASES, RESULT_DIR_NAMES,
     _dir_label,
     _cache_get, _cache_set,
     _log_index_cache, _log_content_cache, LOG_INDEX_TTL_SEC,
@@ -24,6 +24,9 @@ from .mounts import (
 from .crash_detect import detect_crash, detect_soft_failure  # noqa: F401 — re-exported for consumers
 
 _PROGRESS_RE = re.compile(r'(?<![\d\.])(\d{1,3})%(?:\||$|\s)', re.MULTILINE)
+_STDOUT_RE = re.compile(r'(?:^|\s)StdOut=(\S+)', re.MULTILINE)
+_LOG_DISCOVERY_ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
+_LOG_ALLOWED_SUFFIXES = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
 
 
 def extract_progress(content):
@@ -178,9 +181,8 @@ def label_log(name):
 
 
 def label_and_sort_files(paths):
-    ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
     files = [{"label": label_log(os.path.basename(p)), "path": p} for p in paths]
-    files.sort(key=lambda f: ORDER.get(f["label"], 10))
+    files.sort(key=lambda f: _LOG_DISCOVERY_ORDER.get(f["label"], 10))
     return files
 
 
@@ -309,63 +311,122 @@ def fetch_log_tail(cluster_name, log_path, lines=150):
         return f"Could not read log: {e}"
 
 
-def _db_log_path(cluster_name, job_id):
-    """Look up the stored log_path for a job from the history DB."""
+def _output_dir_from_log_path(log_path):
+    if not log_path:
+        return ""
+    log_dir = os.path.dirname(log_path)
+    output_dir = os.path.dirname(log_dir)
+    if not output_dir or output_dir == log_dir:
+        return ""
+    return output_dir
+
+
+def _db_log_context(cluster_name, job_id):
+    """Look up stored log metadata for a job from the history DB."""
     try:
         from .db import get_db
         con = get_db()
         row = con.execute(
-            "SELECT log_path FROM job_history WHERE cluster=? AND job_id=?",
+            """SELECT jh.log_path, r.scontrol_raw
+               FROM job_history jh
+               LEFT JOIN runs r ON r.id = jh.run_id AND r.cluster = jh.cluster
+               WHERE jh.cluster=? AND jh.job_id=?
+               ORDER BY jh.id DESC
+               LIMIT 1""",
             (cluster_name, str(job_id)),
         ).fetchone()
         con.close()
-        if row and row[0]:
-            return row["log_path"]
+        if not row:
+            return {"log_path": "", "output_dir": ""}
+        log_path = row["log_path"] or ""
+        output_dir = _output_dir_from_log_path(log_path)
+        if not output_dir:
+            m = _STDOUT_RE.search(row["scontrol_raw"] or "")
+            if m:
+                output_dir = _output_dir_from_log_path(m.group(1))
+        return {"log_path": log_path, "output_dir": output_dir}
     except Exception:
         pass
-    return ""
+    return {"log_path": "", "output_dir": ""}
 
 
-def _try_local_discovery(cluster_name, job_id, db_path):
+def _append_discovered_dir(dirs, seen_dirs, remote_dir):
+    if not remote_dir or remote_dir in seen_dirs:
+        return
+    seen_dirs.add(remote_dir)
+    dirs.append({"label": _dir_label(remote_dir), "path": remote_dir})
+
+
+def _append_discovered_file(files, seen_paths, remote_path, raw_label):
+    if not remote_path or remote_path in seen_paths:
+        return
+    seen_paths.add(remote_path)
+    files.append({"label": label_log(raw_label), "path": remote_path})
+
+
+def _discover_local_dir_files(mounted_dir, remote_dir, job_id, seen_paths, files,
+                              include_recognized=False, label_prefix=""):
+    sid = str(job_id)
+    try:
+        names = sorted(os.listdir(mounted_dir))
+    except OSError:
+        return
+    for name in names:
+        local = os.path.join(mounted_dir, name)
+        if not os.path.isfile(local):
+            continue
+        if not name.lower().endswith(_LOG_ALLOWED_SUFFIXES):
+            continue
+        recognized = label_log(name) != name
+        if sid not in name and not (include_recognized and recognized):
+            continue
+        raw_label = f"{label_prefix}/{name}" if label_prefix else name
+        remote_path = os.path.join(remote_dir, name)
+        _append_discovered_file(files, seen_paths, remote_path, raw_label)
+
+
+def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
     """Try to discover log files from the local mount without SSH.
 
     If the log directory from the DB path is accessible via mount, list
     files locally. Returns None if mount is unavailable or no files found.
     """
-    if not db_path:
+    if not db_path and not output_dir:
         return None
-    logdir = os.path.dirname(db_path)
-    if not logdir:
-        return None
-    mounted_dir = resolve_mounted_path(cluster_name, logdir, want_dir=True)
-    if not mounted_dir or not os.path.isdir(mounted_dir):
-        return None
-
-    ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
-    allowed = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
-    sid = str(job_id)
+    logdir = os.path.dirname(db_path) if db_path else ""
     files = []
-    jobid_files = []
-    try:
-        for name in sorted(os.listdir(mounted_dir)):
-            if sid not in name:
-                continue
-            fpath = os.path.join(logdir, name)
-            local = os.path.join(mounted_dir, name)
-            if not os.path.isfile(local):
-                continue
-            if not name.lower().endswith(allowed):
-                continue
-            entry = {"label": label_log(name), "path": fpath}
-            files.append(entry)
-            jobid_files.append(entry)
-    except OSError:
-        return None
+    dirs = []
+    seen_paths = set()
+    seen_dirs = set()
 
-    if not files:
+    if logdir:
+        mounted_logdir = resolve_mounted_path(cluster_name, logdir, want_dir=True)
+        if mounted_logdir and os.path.isdir(mounted_logdir):
+            _discover_local_dir_files(
+                mounted_logdir, logdir, job_id, seen_paths, files, include_recognized=True
+            )
+
+    if output_dir:
+        candidate_dirs = [output_dir] + [os.path.join(output_dir, name) for name in RESULT_DIR_NAMES]
+        for remote_dir in candidate_dirs:
+            mounted_dir = resolve_mounted_path(cluster_name, remote_dir, want_dir=True)
+            if not mounted_dir or not os.path.isdir(mounted_dir):
+                continue
+            _append_discovered_dir(dirs, seen_dirs, remote_dir)
+            label_prefix = os.path.basename(remote_dir.rstrip("/")) if remote_dir != output_dir else ""
+            _discover_local_dir_files(
+                mounted_dir,
+                remote_dir,
+                job_id,
+                seen_paths,
+                files,
+                include_recognized=(remote_dir == output_dir),
+                label_prefix=label_prefix,
+            )
+
+    if not files and not dirs:
         return None
-    files.sort(key=lambda f: ORDER.get(f["label"], 10))
-    dirs = _derive_result_dirs(jobid_files, cluster_name)
+    files.sort(key=lambda f: _LOG_DISCOVERY_ORDER.get(f["label"], 10))
     return {"files": files, "dirs": dirs}
 
 
@@ -373,9 +434,11 @@ def get_job_log_files(cluster_name, job_id):
     if cluster_name == "local":
         return local_job_log_files(job_id)
 
-    db_path = _db_log_path(cluster_name, job_id)
+    log_ctx = _db_log_context(cluster_name, job_id)
+    db_path = log_ctx["log_path"]
+    output_dir = log_ctx["output_dir"]
 
-    local = _try_local_discovery(cluster_name, job_id, db_path)
+    local = _try_local_discovery(cluster_name, job_id, db_path, output_dir=output_dir)
     if local:
         return local
     db_logdir_clause = ""
@@ -430,8 +493,7 @@ fi
     seen = set()
     files = []
     jobid_files = []
-    ORDER = {"main output": 0, "server output": 1, "sandbox output": 2, "sbatch log": 3, "sbatch stderr": 4}
-    allowed_suffixes = (".log", ".out", ".err", ".txt", ".json", ".jsonl", ".jsonl-async", ".md")
+    allowed_suffixes = _LOG_ALLOWED_SUFFIXES
 
     extra_dirs = []
     for line in out.splitlines():
@@ -456,7 +518,7 @@ fi
         if str(job_id) in os.path.basename(path):
             jobid_files.append(entry)
 
-    files.sort(key=lambda f: ORDER.get(f["label"], 10))
+    files.sort(key=lambda f: _LOG_DISCOVERY_ORDER.get(f["label"], 10))
     dirs = _derive_result_dirs(jobid_files, cluster_name) + extra_dirs
 
     if not files and not dirs:
