@@ -54,7 +54,8 @@ async function openLog(cluster, jobId, jobName, force) {
     if (files.length) {
       tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
         name: f.label, path: f.path, is_dir: false,
-        icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄'
+        icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄',
+        job_id: _extractJobId(f.path.split('/').pop() || ''),
       })), true));
     }
 
@@ -163,6 +164,14 @@ function renderTreeItems(container, items, depth, onFileClick) {
     name.className = 'item-name';
     name.textContent = item.name;
     el.appendChild(name);
+
+    if (!item.is_dir && item.job_id) {
+      const jid = document.createElement('span');
+      jid.className = 'item-jobid';
+      jid.textContent = item.job_id;
+      el.appendChild(jid);
+    }
+
     if (!item.is_dir && item.source_hint) {
       const hint = document.createElement('span');
       hint.className = 'item-size';
@@ -249,13 +258,19 @@ async function expandDir(path, container, depth, onFileClick) {
     }
     const items = data.entries.map(e => ({
       name: e.name, path: e.path, is_dir: e.is_dir, size: e.size,
-      icon: e.is_dir ? '📁' : guessIcon(e.name)
+      icon: e.is_dir ? '📁' : guessIcon(e.name),
+      job_id: e.is_dir ? '' : _extractJobId(e.name),
     }));
     _treeState[cacheKey] = { ts: Date.now(), items };
     renderTreeItems(container, items, depth || 0, onFileClick);
   } catch (e) {
     container.innerHTML = `<div class="tree-loading" style="color:var(--red)">Error: ${e}</div>`;
   }
+}
+
+function _extractJobId(filename) {
+  const m = filename.match(/(\d{5,})/);
+  return m ? m[1] : '';
 }
 
 function guessIcon(name) {

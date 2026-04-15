@@ -68,7 +68,8 @@ async function _loadExplorerTree() {
     if (files.length) {
       tree.appendChild(makeTreeSection('📋 logs', files.map(f => ({
         name: f.label, path: f.path, is_dir: false,
-        icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄'
+        icon: f.label.includes('error') || f.label.includes('stderr') ? '⚠' : '📄',
+        job_id: _extractJobId(f.path.split('/').pop() || ''),
       })), true, null, onFileClick));
     }
     for (const dir of dirs) {
