@@ -152,7 +152,7 @@
           <div class="proj-section-sep" id="proj-archive-sep" onclick="toggleArchivedRuns()"></div>
           <div id="proj-archive-wrap" style="display:none">
             <div class="history-filter">
-              <input id="proj-search" type="text" placeholder="filter by run name, job name, or job id…" oninput="filterProjectRuns()" />
+              <input id="proj-search" type="text" placeholder="filter by run name, job name, or job id…" oninput="projectSearchChanged()" />
               <div class="hist-state-filters" id="proj-state-filters">
                 <button class="hist-state-btn s-COMPLETED active" data-state="COMPLETED" onclick="toggleProjStateFilter(this)">completed</button>
                 <button class="hist-state-btn s-FAILED active" data-state="FAILED" onclick="toggleProjStateFilter(this)">failed</button>

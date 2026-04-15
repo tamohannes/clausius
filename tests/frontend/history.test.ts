@@ -125,7 +125,7 @@ describe('history search rendering', () => {
     expect(String(fetchMock.mock.calls[0][0])).toContain('q=qwen35');
   });
 
-  it('shows only run rows when search is active', async () => {
+  it('keeps multi-job runs grouped and collapsible while searching', async () => {
     (document.getElementById('hist-search') as HTMLInputElement).value = 'text-qwen35-no-tool-r7';
     (globalThis as any).fetch = vi.fn().mockResolvedValue({
       json: async () => ([
@@ -133,6 +133,7 @@ describe('history search rendering', () => {
           cluster: 'h100',
           job_id: '101',
           job_name: 'hle_text-qwen35-no-tool-r7',
+          run_id: 77,
           state: 'COMPLETED',
           depends_on: [],
           dep_details: [],
@@ -141,8 +142,9 @@ describe('history search rendering', () => {
           cluster: 'h100',
           job_id: '102',
           job_name: 'hle_text-qwen35-no-tool-r7-judge-rs0',
+          run_id: 77,
           state: 'COMPLETED',
-          depends_on: ['101'],
+          depends_on: [],
           dep_details: [],
         },
       ]),
@@ -151,7 +153,11 @@ describe('history search rendering', () => {
     await loadHistory();
 
     expect(document.querySelectorAll('#hist-body tr.group-head-row').length).toBe(1);
-    expect(document.querySelectorAll('#hist-body tr.hist-compact').length).toBe(0);
+    expect(document.querySelectorAll('#hist-body tr.hist-compact').length).toBe(2);
+    expect(document.querySelector('#hist-body [data-group-chevron="h100:101"]')).not.toBeNull();
+    expect(Array.from(document.querySelectorAll('#hist-body tr.hist-compact')).every(
+      row => (row as HTMLElement).style.display === 'none'
+    )).toBe(true);
     expect(document.getElementById('hist-body')?.textContent).toContain('2 jobs');
   });
 });

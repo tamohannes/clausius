@@ -48,6 +48,18 @@ class TestApiHistory:
         assert len(matching) >= 1
         assert matching[0].get("project_color") == "#aabbcc"
 
+    def test_history_includes_output_dir(self, client, db_path):
+        upsert_job("c", {
+            "jobid": "1",
+            "name": "demo_eval",
+            "state": "COMPLETED",
+            "log_path": "/remote/run/logs/slurm-1.out",
+        })
+        resp = client.get("/api/history")
+        data = resp.get_json()
+        match = next(row for row in data if row["job_id"] == "1")
+        assert match["output_dir"] == "/remote/run"
+
     def test_get_history_campaign_state_and_days_filters(self, client, db_path, monkeypatch):
         from server.config import PROJECTS
 

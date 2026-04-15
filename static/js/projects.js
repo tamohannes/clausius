@@ -6,6 +6,8 @@ let _projLiveJobs = [];
 let _projPage = 0;
 let _projCurrentName = '';
 let _projRefreshTimer = null;
+let _projSearchTimer = null;
+let _projHistLoadSeq = 0;
 const PROJ_GROUPS_PER_PAGE = 50;
 
 function _projSearchStorageKey(projectName) {
@@ -24,6 +26,25 @@ function _saveProjectSearch(projectName, value) {
   try {
     sessionStorage.setItem(_projSearchStorageKey(projectName), value || '');
   } catch (_) {}
+}
+
+function _projHasSearchQuery() {
+  const el = document.getElementById('proj-search');
+  return !!(el && el.value.trim());
+}
+
+function projectSearchChanged() {
+  const value = document.getElementById('proj-search')?.value || '';
+  _saveProjectSearch(_projCurrentName, value);
+  if (_projSearchTimer) clearTimeout(_projSearchTimer);
+  _projSearchTimer = setTimeout(() => {
+    _projSearchTimer = null;
+    if (_archivedVisible || _projHistLoaded) {
+      _fetchProjectHistory(false);
+    } else {
+      filterProjectRuns();
+    }
+  }, 180);
 }
 
 function _highlightProjectBtn(projectName) {
@@ -141,20 +162,26 @@ async function _fetchProjectData(showToast) {
   }
 }
 
-async function _fetchProjectHistory() {
+async function _fetchProjectHistory(showToast = true) {
   const name = _projCurrentName;
   if (!name) return;
-  const t = toastLoading(`Loading archived runs…`);
+  const seq = ++_projHistLoadSeq;
+  const q = (document.getElementById('proj-search')?.value || '').trim();
+  _saveProjectSearch(name, q);
+  const t = showToast ? toastLoading(`Loading archived runs…`) : null;
   try {
-    const histRes = await fetch(`/api/history?project=${encodeURIComponent(name)}&limit=10000`).then(r => r.json()).catch(() => []);
+    const params = buildHistoryQueryParams({ project: name, q, limit: 10000 });
+    const histRes = await fetch(`/api/history?${params.toString()}`).then(r => r.json()).catch(() => []);
+    if (seq !== _projHistLoadSeq) return;
     const activeLiveIds = new Set(_projLiveJobs.filter(j => !j._pinned).map(j => String(j.jobid)));
     _projData = (Array.isArray(histRes) ? histRes : []).filter(r => !activeLiveIds.has(String(r.job_id)));
     _projPage = 0;
     _projHistLoaded = true;
     filterProjectRuns();
-    t.done(`${_projData.length} archived runs loaded`);
+    if (t) t.done(`${_projData.length} archived runs loaded`);
   } catch (e) {
-    t.done('Failed to load archived runs', 'error');
+    if (seq !== _projHistLoadSeq) return;
+    if (t) t.done('Failed to load archived runs', 'error');
   }
   _saveProgressCache();
 }
@@ -250,11 +277,7 @@ function _getProjCheckedStates() {
 }
 
 function _projectSearchMatches(row, query) {
-  if (!query) return true;
-  const jobName = (row.job_name || row.name || '').toLowerCase();
-  const jobId = String(row.job_id || row.jobid || '').toLowerCase();
-  const runName = groupKeyForJob(row.job_name || row.name || '').toLowerCase();
-  return jobName.includes(query) || jobId.includes(query) || runName.includes(query);
+  return historySearchMatchesRow(row, query);
 }
 
 function filterProjectRuns() {
@@ -273,19 +296,7 @@ function filterProjectRuns() {
 }
 
 function _buildProjGroups(rows) {
-  const normalized = rows.map(r => ({
-    jobid: r.job_id, name: r.job_name || '', state: r.state || '',
-    elapsed: r.elapsed || '', nodes: r.nodes || '', gres: r.gres || '',
-    partition: r.partition || '', submitted: r.submitted || '',
-    account: r.account || '', campaign: r.campaign || '',
-    started: r.started || '', started_local: r.started_local || '',
-    ended_local: r.ended_local || '', ended_at: r.ended_at || '',
-    depends_on: r.depends_on || [], dependents: r.dependents || [],
-    dep_details: r.dep_details || [], project: r.project || '',
-    project_color: r.project_color || '', project_emoji: r.project_emoji || '',
-    reason: r.reason || '', exit_code: r.exit_code || '',
-    _cluster: r.cluster, _pinned: true,
-  }));
+  const normalized = rows.map(normalizeHistoryJobRow);
 
   const byCluster = {};
   for (const j of normalized) {
@@ -311,6 +322,7 @@ function _renderProjPage() {
   const container = document.getElementById('proj-hist-cards');
   if (!container) return;
   const totalGroups = _projGroups.length;
+  const searchOnlyRuns = _projHasSearchQuery();
   const totalPages = Math.max(1, Math.ceil(totalGroups / PROJ_GROUPS_PER_PAGE));
   if (_projPage >= totalPages) _projPage = totalPages - 1;
   if (_projPage < 0) _projPage = 0;
@@ -355,12 +367,18 @@ function _renderProjPage() {
       const groupId = `${cluster}:${rootJobId}`;
       const isGroupExpanded = _expandedGroups.has(groupId);
 
-      const chevronCls = isGroupExpanded ? ' expanded' : '';
-      const chevronHtml = hasMultiple ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
+      const showChevron = hasMultiple;
+      const chevronCls = showChevron && isGroupExpanded ? ' expanded' : '';
+      const chevronHtml = showChevron ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, cluster);
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge} ${summaryHtml} <span class="group-count">· ${groupJobs.length} job${groupJobs.length > 1 ? 's' : ''}</span></span>`;
-      html += `<tr class="group-head-row" onclick="toggleRunGroup('${groupId}')"><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+      const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${cluster}','${rootJobId}','${safeLabel}')`;
+      html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="10"><span class="group-head-content">${groupLabel}</span></td></tr>`;
+
+      if (searchOnlyRuns && !hasMultiple) {
+        return;
+      }
 
       const idSet = new Set(groupJobs.map(j => j.jobid));
       const byId = {};

@@ -441,6 +441,87 @@ function groupKeyForJob(name) {
     .toLowerCase();
 }
 
+function historySearchValues(row) {
+  const baseName = row.run_name || row.job_name || row.name || '';
+  return [
+    row.job_name || row.name || '',
+    row.run_name || '',
+    String(row.job_id || row.jobid || ''),
+    groupKeyForJob(baseName),
+    row.project || '',
+    row.campaign || '',
+    row.partition || '',
+    row.account || '',
+    row.cluster || row._cluster || '',
+  ].map(v => String(v).toLowerCase());
+}
+
+function historySearchMatchesRow(row, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return true;
+  return historySearchValues(row).some(value => value.includes(q));
+}
+
+function normalizeHistoryJobRow(row) {
+  return {
+    jobid: row.job_id,
+    name: row.job_name || '',
+    state: row.state || '',
+    elapsed: row.elapsed || '',
+    nodes: row.nodes || '',
+    gres: row.gres || '',
+    partition: row.partition || '',
+    account: row.account || '',
+    campaign: row.campaign || '',
+    submitted: row.submitted || '',
+    started: row.started || '',
+    started_local: row.started_local || '',
+    ended_local: row.ended_local || '',
+    ended_at: row.ended_at || '',
+    depends_on: row.depends_on || [],
+    dependents: row.dependents || [],
+    dep_details: row.dep_details || [],
+    project: row.project || '',
+    project_color: row.project_color || '',
+    project_emoji: row.project_emoji || '',
+    reason: row.reason || '',
+    exit_code: row.exit_code || '',
+    run_id: row.run_id || null,
+    run_name: row.run_name || '',
+    output_dir: row.output_dir || '',
+    _cluster: row.cluster,
+    _pinned: true,
+  };
+}
+
+function buildHistoryQueryParams(options = {}) {
+  const params = new URLSearchParams();
+  const cluster = options.cluster;
+  const project = options.project;
+  const campaign = options.campaign;
+  const partition = options.partition;
+  const account = options.account;
+  const state = options.state;
+  const days = options.days;
+  const q = options.q;
+  const limit = options.limit;
+
+  if (cluster) params.set('cluster', cluster);
+  if (project) params.set('project', project);
+  if (campaign) params.set('campaign', campaign);
+  if (partition) params.set('partition', partition);
+  if (account) params.set('account', account);
+  if (days && days !== 'all') params.set('days', days);
+  if (q) params.set('q', q);
+  if (limit != null && limit !== '') params.set('limit', String(limit));
+
+  const stateValues = Array.isArray(state) ? state : (state ? [state] : []);
+  for (const value of stateValues) {
+    if (value) params.append('state', value);
+  }
+  return params;
+}
+
 function groupJobsByDependency(jobs) {
   // Build dependency-aware groups: if A -> B -> C form a chain,
   // they belong in one group regardless of name prefix.

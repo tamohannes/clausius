@@ -81,18 +81,7 @@ function _historyMatches(row, ignore = new Set()) {
 
   const q = _histValue('hist-search').trim().toLowerCase();
   if (!ignore.has('search') && q) {
-    const values = [
-      row.job_name || row.name || '',
-      row.run_name || '',
-      String(row.job_id || row.jobid || ''),
-      groupKeyForJob(row.job_name || row.name || ''),
-      row.project || '',
-      row.campaign || '',
-      row.partition || '',
-      row.account || '',
-      row.cluster || row._cluster || '',
-    ].map(v => String(v).toLowerCase());
-    if (!values.some(value => value.includes(q))) return false;
+    if (!historySearchMatchesRow(row, q)) return false;
   }
 
   return true;
@@ -126,9 +115,7 @@ async function loadHistory() {
   const cluster = _histValue('hist-cluster') || 'all';
   const days = _histValue('hist-days');
   const q = _histValue('hist-search').trim();
-  const params = new URLSearchParams({ cluster, limit: '10000' });
-  if (days && days !== 'all') params.set('days', days);
-  if (q) params.set('q', q);
+  const params = buildHistoryQueryParams({ cluster, days, q, limit: 10000 });
   try {
     const res = await fetch(`/api/history?${params.toString()}`);
     const rows = await res.json();
@@ -146,32 +133,7 @@ function historyGroupKey(r) {
 }
 
 function _buildHistGroups(rows) {
-  const normalized = rows.map(r => ({
-    jobid: r.job_id,
-    name: r.job_name || '',
-    state: r.state || '',
-    elapsed: r.elapsed || '',
-    nodes: r.nodes || '',
-    gres: r.gres || '',
-    partition: r.partition || '',
-    account: r.account || '',
-    campaign: r.campaign || '',
-    submitted: r.submitted || '',
-    started: r.started || '',
-    started_local: r.started_local || '',
-    ended_local: r.ended_local || '',
-    ended_at: r.ended_at || '',
-    depends_on: r.depends_on || [],
-    dependents: r.dependents || [],
-    dep_details: r.dep_details || [],
-    project: r.project || '',
-    project_color: r.project_color || '',
-    project_emoji: r.project_emoji || '',
-    reason: r.reason || '',
-    exit_code: r.exit_code || '',
-    _cluster: r.cluster,
-    _pinned: true,
-  }));
+  const normalized = rows.map(normalizeHistoryJobRow);
 
   const byCluster = {};
   for (const j of normalized) {
@@ -232,17 +194,17 @@ function _renderHistPage() {
     const groupId = `${g.cluster}:${rootJobId}`;
     const isGroupExpanded = _expandedGroups.has(groupId);
     if (searchOnlyRuns || hasMultiple) {
-      const showChevron = hasMultiple && !searchOnlyRuns;
+      const showChevron = hasMultiple;
       const chevronCls = showChevron && isGroupExpanded ? ' expanded' : '';
       const chevronHtml = showChevron ? `<span class="group-chevron${chevronCls}" data-group-chevron="${groupId}">&#9654;</span>` : '';
       const donutHtml = statusDonut(groupJobs);
       const summaryHtml = statusSummaryHtml(groupJobs, g.cluster);
-      const rowAction = searchOnlyRuns ? `openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')` : `toggleRunGroup('${groupId}')`;
+      const rowAction = hasMultiple ? `toggleRunGroup('${groupId}')` : `openRunInfo('${g.cluster}','${rootJobId}','${safeLabel}')`;
       const groupLabel = `<span>${chevronHtml}${donutHtml}${runBadge}${_projBadge} ${g.cluster} ${summaryHtml} <span class="group-count">· ${_historyGroupCountLabel(groupJobs.length)}</span></span>`;
       html += `<tr class="group-head-row${searchOnlyRuns ? ' search-only' : ''}" onclick="${rowAction}"><td colspan="11" style="padding:4px 16px"><span class="group-head-content">${groupLabel}</span></td></tr>`;
     }
 
-    if (searchOnlyRuns) {
+    if (searchOnlyRuns && !hasMultiple) {
       return;
     }
 

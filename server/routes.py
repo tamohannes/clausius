@@ -59,7 +59,7 @@ from .jobs import (
 )
 from .poller import get_poller, get_version, touch_demand
 from .db import get_run_with_jobs
-from .board import build_board_snapshot, build_cluster_board_entry
+from .board import build_board_snapshot, build_cluster_board_entry, _fill_output_dirs
 
 api = Blueprint("api", __name__)
 
@@ -973,6 +973,12 @@ def api_history():
         account=account,
         days=days,
     )
+    by_cluster = {}
+    for row in rows:
+        by_cluster.setdefault(row.get("cluster") or cluster, []).append(row)
+    for cluster_name, cluster_rows in by_cluster.items():
+        if cluster_name and cluster_name != "all":
+            _fill_output_dirs(cluster_name, cluster_rows)
     for r in rows:
         if not r.get("project"):
             r["project"] = extract_project(r.get("job_name") or r.get("name") or "")
