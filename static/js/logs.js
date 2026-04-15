@@ -371,7 +371,11 @@ function jsonlCollapseAll() {
   document.querySelectorAll('#modal-content [data-jsonl-rec]').forEach((d) => { d.open = false; });
 }
 
-function renderJsonlLazyViewer(data, filePath) {
+function renderJsonlLazyViewer(data, filePath, opts) {
+  opts = opts || {};
+  const containerId = opts.containerId || 'modal-content';
+  const cluster = opts.cluster || _exCluster;
+  const jobId = opts.jobId || _exJobId;
   const records = data.records || [];
   const count = data.count || 0;
   if (!count) return '<div class="jsonl-view"><div class="jsonl-meta">No records in file.</div></div>';
@@ -396,7 +400,7 @@ function renderJsonlLazyViewer(data, filePath) {
   window._jsonlToggleAbort = new AbortController();
 
   setTimeout(() => {
-    const container = document.getElementById('modal-content');
+    const container = document.getElementById(containerId);
     if (!container) return;
     container.addEventListener('toggle', async (e) => {
       const det = e.target.closest('[data-jsonl-rec]');
@@ -408,7 +412,7 @@ function renderJsonlLazyViewer(data, filePath) {
       const line = det.dataset.line;
       const path = det.dataset.path;
       try {
-        const res = await fetchWithTimeout(`/api/jsonl_record/${_exCluster}/${_exJobId}?path=${encodeURIComponent(path)}&line=${line}`);
+        const res = await fetchWithTimeout(`/api/jsonl_record/${cluster}/${jobId}?path=${encodeURIComponent(path)}&line=${line}`);
         const d = await res.json();
         if (d.status === 'ok' && d.content) {
           try {
@@ -445,7 +449,7 @@ function renderJsonlLazyViewer(data, filePath) {
   if (total < 0 && filePath) {
     setTimeout(async () => {
       try {
-        const res = await fetchWithTimeout(`/api/jsonl_index/${_exCluster}/${_exJobId}?path=${encodeURIComponent(filePath)}&mode=first&limit=0`);
+        const res = await fetchWithTimeout(`/api/jsonl_index/${cluster}/${jobId}?path=${encodeURIComponent(filePath)}&mode=first&limit=0`);
         const d = await res.json();
         const el = document.getElementById(metaId);
         if (el && d.total > 0) {

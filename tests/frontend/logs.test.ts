@@ -56,6 +56,11 @@ declare const jsonlRecordSummary: (obj: any) => string;
 declare const guessIcon: (name: string) => string;
 declare const markdownToHtml: (raw: string) => string;
 declare const renderFileContentByType: (path: string, raw: string) => { cls: string; html: string };
+declare const renderJsonlLazyViewer: (
+  data: any,
+  filePath: string,
+  opts?: { containerId?: string; cluster?: string; jobId?: string }
+) => string;
 declare const openLog: (cluster: string, jobId: string, jobName?: string, force?: boolean) => Promise<void>;
 declare const toggleLive: () => void;
 
@@ -200,5 +205,47 @@ describe('live log viewer defaults', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(String(fetchMock.mock.calls[1][0])).toContain('/api/log/h100/123');
     expect(String(fetchMock.mock.calls[1][0])).toContain('force=1');
+  });
+});
+
+describe('jsonl lazy record loading', () => {
+  it('loads a record when rendered in explorer content', async () => {
+    vi.useFakeTimers();
+    (globalThis as any).fetchWithTimeout = vi.fn().mockResolvedValue({
+      json: async () => ({
+        status: 'ok',
+        line: 0,
+        content: '{"id":"abc","value":1}',
+        source: 'mount',
+      }),
+    });
+
+    const exp = document.getElementById('exp-content')!;
+    exp.innerHTML = renderJsonlLazyViewer({
+      status: 'ok',
+      total: 1,
+      count: 1,
+      mode: 'all',
+      limit: 0,
+      records: [{ line: 0, preview: '{"id":"abc"}', valid: true, size: 16 }],
+    }, '/remote/data.jsonl', {
+      containerId: 'exp-content',
+      cluster: 'h100',
+      jobId: '123',
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+
+    const details = exp.querySelector('[data-jsonl-rec]') as HTMLDetailsElement;
+    const body = exp.querySelector('[data-lazy]') as HTMLElement;
+    details.open = true;
+    details.dispatchEvent(new Event('toggle', { bubbles: false }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect((globalThis as any).fetchWithTimeout).toHaveBeenCalledTimes(1);
+    expect(String((globalThis as any).fetchWithTimeout.mock.calls[0][0])).toContain('/api/jsonl_record/h100/123');
+    expect(body.textContent).toContain('"id"');
+    expect(body.textContent).toContain('"abc"');
   });
 });

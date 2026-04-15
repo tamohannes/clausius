@@ -264,7 +264,11 @@ async function _loadExplorerJsonl() {
     }
     document.getElementById('exp-source').textContent = `source: ${data.source}`;
     document.getElementById('exp-source').className = `source-pill ${data.source}`;
-    el.innerHTML = renderJsonlLazyViewer(data, _expPath);
+    el.innerHTML = renderJsonlLazyViewer(data, _expPath, {
+      containerId: 'exp-content',
+      cluster: _expCluster,
+      jobId: _expJobId,
+    });
     document.getElementById('exp-pagination').innerHTML =
       `<span style="margin-right:8px;font-size:10px">${data.total || data.count} records</span>`;
   } catch (e) {
