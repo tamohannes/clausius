@@ -584,10 +584,13 @@ function renderCard(name, data) {
       const elapsedCell = fmtElapsedCell(j);
       const safeName = (j.name || '').replace(/'/g, "\\'");
       const isPending = st === 'PENDING';
-      const logBtn = isPending ? '' : `<button class="action-btn log-btn" onclick="openLog('${name}','${j.jobid}','${safeName}')">log</button>`;
+      const isCpuUtility = !hasGpu && (j.partition || '').toLowerCase().startsWith('cpu');
+      const logBtn = isPending ? '' : `<button class="action-btn log-btn${isCpuUtility ? ' cpu-utility' : ''}" onclick="openLog('${name}','${j.jobid}','${safeName}')"${isCpuUtility ? ' title="utility job — logs may not be available"' : ''}>log</button>`;
       const statsBtn = isPending ? '' : (name === 'local'
         ? `<button class="action-btn" title="Stats not available for local process mode" onclick="toast('Stats popup is for Slurm cluster jobs','error')">stats</button>`
-        : `<button class="action-btn log-btn" onclick="openStats('${name}','${j.jobid}','${safeName}')">stats</button>`);
+        : (isCpuUtility
+          ? `<button class="action-btn cpu-utility" title="No GPU stats for CPU utility jobs" onclick="toast('No GPU stats for CPU utility jobs','info')">stats</button>`
+          : `<button class="action-btn log-btn" onclick="openStats('${name}','${j.jobid}','${safeName}')">stats</button>`));
       const quickActions = `${logBtn} ${statsBtn}`;
       const tailAction = (isPinned && !isActivelyCancelable)
         ? `<button class="action-btn" title="dismiss" onclick="dismissFailed('${name}','${j.jobid}')">✕</button>`

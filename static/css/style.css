@@ -611,6 +611,8 @@ td.bold { font-weight: 500; }
 }
 .action-btn:hover { border-color: var(--red); color: var(--red); background: var(--red-bg); }
 .action-btn.log-btn:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.action-btn.cpu-utility { opacity: 0.35; }
+.action-btn.cpu-utility:hover { opacity: 0.7; }
 
 /* Pinned terminal rows */
 tbody tr.pinned-row td { opacity: 0.9; }

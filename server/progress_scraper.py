@@ -9,7 +9,7 @@ def _progress_scraper_loop():
     from .config import CLUSTERS, _cache, _cache_lock, PROGRESS_TTL_SEC, CRASH_TTL_SEC
     from .db import cache_db_put
     from .jobs import extract_progress, detect_crash, _LOG_ERROR_PREFIXES
-    from .logs import _db_log_path, _try_local_discovery, tail_local_file
+    from .logs import _db_log_context, _try_local_discovery, tail_local_file
     from .mounts import resolve_mounted_path
     from .routes import _cache_get, _cache_set, _progress_cache, _progress_source_cache, _crash_cache, _log_content_cache
     from .poller import get_poller, bump_version
@@ -32,7 +32,7 @@ def _progress_scraper_loop():
                 
                 for jid in active_jobs:
                     try:
-                        db_path = _db_log_path(cluster, jid)
+                        db_path = _db_log_context(cluster, jid).get("log_path", "")
                         if not db_path:
                             continue
                             

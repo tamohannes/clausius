@@ -1729,9 +1729,9 @@ def _prefetch_job_data(cluster, job_id):
     try:
         try:
             # Fast path: use db log_path and local mount to avoid expensive log discovery
-            from .logs import _db_log_path, tail_local_file
+            from .logs import _db_log_context, tail_local_file
             from .mounts import resolve_mounted_path
-            db_path = _db_log_path(cluster, job_id)
+            db_path = _db_log_context(cluster, job_id).get("log_path", "")
             fast_pct = None
             if db_path:
                 db_path = db_path.replace("%j", str(job_id))
