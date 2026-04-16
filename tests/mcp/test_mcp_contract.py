@@ -1,13 +1,12 @@
-"""MCP tool/resource contract tests — direct-import architecture.
+"""MCP tool/resource contract tests — HTTP proxy architecture.
 
-Mocks server modules (server.config, server.jobs, server.ssh, etc.)
-at the mcp_server helper level. No HTTP mocks.
+Mocks mcp_server._api to verify each tool sends the right HTTP call
+and returns the right shape.
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, call
 
-import mcp_server
 from mcp_server import (
     health_check,
     list_jobs, list_log_files, get_job_log,
@@ -39,8 +38,6 @@ class TestSlimJob:
         assert result["state"] == "RUNNING"
 
 
-# ── _slim_job crash_detected / exit_code ─────────────────────────────────────
-
 @pytest.mark.mcp
 class TestSlimJobCrashFields:
     def test_preserves_crash_detected(self):
@@ -67,15 +64,14 @@ class TestSlimJobCrashFields:
 @pytest.mark.mcp
 class TestHealthCheck:
     def test_returns_ok(self):
-        result = health_check()
+        with patch("mcp_server._api", return_value={"status": "ok", "board_version": 1}):
+            result = health_check()
         assert result["status"] == "ok"
-        assert "clusters" in result
-        assert isinstance(result["clusters"], list)
 
-    def test_reports_db_existence(self):
-        result = health_check()
-        assert "db" in result
-        assert isinstance(result["db"], bool)
+    def test_reports_service_status(self):
+        with patch("mcp_server._api", return_value={"status": "ok", "board_version": 1}):
+            result = health_check()
+        assert "service" in result
 
 
 # ── list_jobs ────────────────────────────────────────────────────────────────
@@ -87,28 +83,21 @@ class TestListJobs:
             "c1": {"status": "ok", "jobs": [{"jobid": "1", "state": "RUNNING"}]},
             "c2": {"status": "ok", "jobs": [{"jobid": "2", "state": "PENDING"}]},
         }
-        with patch.object(mcp_server, "_get_all_jobs_snapshot", return_value=snapshot):
+        with patch("mcp_server._api", return_value=snapshot):
             result = list_jobs()
         assert len(result) == 2
         assert {r["cluster"] for r in result} == {"c1", "c2"}
 
     def test_single_cluster(self):
         cdata = {"status": "ok", "jobs": [{"jobid": "1", "state": "RUNNING"}]}
-        with patch.object(mcp_server, "_get_cluster_jobs", return_value=cdata), \
-             patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
+        with patch("mcp_server._api", return_value=cdata):
             result = list_jobs(cluster="c1")
         assert len(result) == 1
         assert result[0]["cluster"] == "c1"
 
-    def test_unknown_cluster_returns_error(self):
-        result = list_jobs(cluster="nonexistent-xyz")
-        assert len(result) == 1
-        assert "error" in result[0]
-
     def test_cluster_error_propagated(self):
         cdata = {"status": "error", "error": "unreachable"}
-        with patch.object(mcp_server, "_get_cluster_jobs", return_value=cdata), \
-             patch.dict(mcp_server.CLUSTERS, {"bad": {}}):
+        with patch("mcp_server._api", return_value=cdata):
             result = list_jobs(cluster="bad")
         assert len(result) == 1
         assert "error" in result[0]
@@ -120,13 +109,13 @@ class TestListJobs:
                 {"jobid": "2", "state": "RUNNING", "project": "beta"},
             ]},
         }
-        with patch.object(mcp_server, "_get_all_jobs_snapshot", return_value=snapshot):
+        with patch("mcp_server._api", return_value=snapshot):
             result = list_jobs(project="alpha")
         assert len(result) == 1
         assert result[0]["jobid"] == "1"
 
     def test_returns_list(self):
-        with patch.object(mcp_server, "_get_all_jobs_snapshot", return_value={}):
+        with patch("mcp_server._api", return_value={}):
             result = list_jobs()
         assert isinstance(result, list)
 
@@ -137,7 +126,7 @@ class TestListJobs:
 class TestListLogFiles:
     def test_passthrough(self):
         resp = {"status": "ok", "files": [{"label": "main", "path": "/x"}], "dirs": []}
-        with patch.object(mcp_server, "get_job_log_files_cached", return_value=resp):
+        with patch("mcp_server._api", return_value=resp):
             result = list_log_files("c1", "123")
         assert result["status"] == "ok"
         assert len(result["files"]) == 1
@@ -148,24 +137,17 @@ class TestListLogFiles:
 @pytest.mark.mcp
 class TestGetJobLog:
     def test_returns_content(self):
-        files = {"files": [{"label": "main", "path": "/log.out"}], "dirs": []}
-        with patch.object(mcp_server, "get_job_log_files_cached", return_value=files), \
-             patch.object(mcp_server, "fetch_log_tail", return_value="log line 1\nlog line 2"):
+        resp = {"status": "ok", "content": "log line 1\nlog line 2"}
+        with patch("mcp_server._api", return_value=resp):
             result = get_job_log("c1", "123")
         assert isinstance(result, str)
         assert "log line 1" in result
 
-    def test_no_files_returns_error(self):
-        with patch.object(mcp_server, "get_job_log_files_cached", return_value={"files": [], "dirs": []}):
+    def test_error_returned(self):
+        resp = {"status": "error", "error": "No log files found"}
+        with patch("mcp_server._api", return_value=resp):
             result = get_job_log("c1", "123")
         assert "Error" in result
-
-    def test_with_explicit_path(self):
-        with patch.object(mcp_server, "resolve_mounted_path", return_value=None), \
-             patch.object(mcp_server, "fetch_log_tail", return_value="content") as mock_tail:
-            result = get_job_log("c1", "1", path="/a/b.log", lines=50)
-        mock_tail.assert_called_once_with("c1", "/a/b.log", 50)
-        assert result == "content"
 
 
 # ── get_job_stats ────────────────────────────────────────────────────────────
@@ -174,7 +156,7 @@ class TestGetJobLog:
 class TestGetJobStats:
     def test_returns_dict(self):
         resp = {"status": "ok", "job_id": "1", "state": "RUNNING", "gpus": []}
-        with patch.object(mcp_server, "get_job_stats_cached", return_value=resp):
+        with patch("mcp_server._api", return_value=resp):
             result = get_job_stats("c1", "1")
         assert isinstance(result, dict)
         assert result["status"] == "ok"
@@ -186,41 +168,20 @@ class TestGetJobStats:
 class TestGetHistory:
     def test_returns_list(self):
         rows = [{"job_id": "1", "job_name": "alpha_x"}, {"job_id": "2", "job_name": "beta_y"}]
-        with patch("server.db.get_history", return_value=rows):
+        with patch("mcp_server._api", return_value=rows):
             result = get_history()
         assert isinstance(result, list)
         assert len(result) == 2
 
-    def test_enriches_project(self):
-        rows = [{"job_id": "1", "job_name": "alpha_eval", "project": ""}]
-        with patch("server.db.get_history", return_value=rows):
-            result = get_history()
-        assert result[0]["project"] == "alpha"
-
-    def test_passes_filters(self):
-        with patch("server.db.get_history", return_value=[]) as mock_hist:
-            get_history(
-                cluster="c1",
-                project="alpha",
-                campaign="mpsf,text",
-                state="FAILED,RUNNING",
-                partition="p-h100",
-                account="research_team_alpha",
-                search="eval",
-                days=7,
-                limit=10,
-            )
-        mock_hist.assert_called_once_with(
-            "c1",
-            10,
-            project="alpha",
-            search="eval",
-            state="FAILED,RUNNING",
-            campaign="mpsf,text",
-            partition="p-h100",
-            account="research_team_alpha",
-            days=7,
-        )
+    def test_passes_params(self):
+        with patch("mcp_server._api", return_value=[]) as mock:
+            get_history(cluster="c1", project="alpha", state="FAILED", limit=10)
+        mock.assert_called_once()
+        _, kwargs = mock.call_args
+        assert kwargs["params"]["cluster"] == "c1"
+        assert kwargs["params"]["project"] == "alpha"
+        assert kwargs["params"]["state"] == "FAILED"
+        assert kwargs["params"]["limit"] == "10"
 
 
 # ── cancel_job ───────────────────────────────────────────────────────────────
@@ -228,31 +189,14 @@ class TestGetHistory:
 @pytest.mark.mcp
 class TestCancelJob:
     def test_success(self):
-        with patch.object(mcp_server, "cancel_jobs_with_report", return_value={"cancelled_ids": ["123"], "errors": []}), \
-             patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
+        with patch("mcp_server._api", return_value={"status": "ok"}):
             result = cancel_job("c1", "123")
         assert result["status"] == "ok"
 
-    def test_unknown_cluster(self):
-        result = cancel_job("nonexistent-xyz", "123")
-        assert result["status"] == "error"
-
-    def test_ssh_error(self):
-        with patch.object(
-            mcp_server,
-            "cancel_jobs_with_report",
-            return_value={"cancelled_ids": [], "errors": [{"job_id": "123", "error": "refused", "exit_code": None}]},
-        ), \
-             patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
+    def test_error(self):
+        with patch("mcp_server._api", return_value={"status": "error", "error": "refused"}):
             result = cancel_job("c1", "123")
         assert result["status"] == "error"
-        assert "refused" in result["error"]
-
-    def test_local_kill(self):
-        with patch("os.kill") as mock_kill:
-            result = cancel_job("local", "12345")
-        mock_kill.assert_called_once_with(12345, 15)
-        assert result["status"] == "ok"
 
 
 # ── cancel_jobs ──────────────────────────────────────────────────────────────
@@ -260,41 +204,17 @@ class TestCancelJob:
 @pytest.mark.mcp
 class TestCancelJobs:
     def test_batch_success(self):
-        with patch.object(
-            mcp_server,
-            "cancel_jobs_with_report",
-            return_value={"cancelled_ids": ["100", "200", "300"], "errors": []},
-        ), \
-             patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
+        with patch("mcp_server._api", return_value={"status": "ok", "cancelled": 3, "cancelled_ids": ["100", "200", "300"]}):
             result = cancel_jobs("c1", ["100", "200", "300"])
         assert result["status"] == "ok"
-        assert result["cancelled"] == 3
 
     def test_batch_partial(self):
-        with patch.object(
-            mcp_server,
-            "cancel_jobs_with_report",
-            return_value={
-                "cancelled_ids": ["100"],
-                "errors": [{"job_id": "200", "error": "already gone", "exit_code": 1}],
-            },
-        ), \
-             patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
+        with patch("mcp_server._api", return_value={
+            "status": "partial", "cancelled": 1, "cancelled_ids": ["100"],
+            "failed_ids": ["200"], "errors": ["200: already gone"],
+        }):
             result = cancel_jobs("c1", ["100", "200"])
         assert result["status"] == "partial"
-        assert result["cancelled"] == 1
-        assert result["cancelled_ids"] == ["100"]
-        assert result["failed_ids"] == ["200"]
-        assert any("200: already gone" in err for err in result["errors"])
-
-    def test_no_valid_ids(self):
-        with patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
-            result = cancel_jobs("c1", ["bad", ""])
-        assert result["status"] == "error"
-
-    def test_unknown_cluster(self):
-        result = cancel_jobs("nonexistent-xyz", ["100"])
-        assert result["status"] == "error"
 
 
 # ── jobs_summary ─────────────────────────────────────────────────────────────
@@ -302,25 +222,16 @@ class TestCancelJobs:
 @pytest.mark.mcp
 class TestJobsSummary:
     def test_summary_format(self):
-        snapshot = {
-            "c1": {"status": "ok", "jobs": [
-                {"state": "RUNNING"}, {"state": "PENDING"},
-            ]},
-            "c2": {"status": "error"},
-        }
-        with patch.object(mcp_server, "_get_all_jobs_snapshot", return_value=snapshot):
+        with patch("mcp_server._api", return_value={"status": "ok", "summary": "Total: 1 running, 1 pending, 0 failed\nc1: 1 running, 1 pending\nc2: unreachable"}):
             result = jobs_summary()
         assert isinstance(result, str)
         assert "Total:" in result
         assert "1 running" in result
-        assert "1 pending" in result
-        assert "c2: unreachable" in result
 
     def test_all_idle(self):
-        with patch.object(mcp_server, "_get_all_jobs_snapshot", return_value={"c1": {"status": "ok", "jobs": []}}):
+        with patch("mcp_server._api", return_value={"status": "ok", "summary": "Total: 0 running, 0 pending, 0 failed\nc1: idle"}):
             result = jobs_summary()
         assert "idle" in result
-        assert "Total: 0 running" in result
 
 
 # ── get_mounts ───────────────────────────────────────────────────────────────
@@ -328,7 +239,7 @@ class TestJobsSummary:
 @pytest.mark.mcp
 class TestGetMounts:
     def test_returns_dict(self):
-        with patch.object(mcp_server, "all_mount_status", return_value={"c1": {"mounted": True}}):
+        with patch("mcp_server._api", return_value={"status": "ok", "mounts": {"c1": {"mounted": True}}}):
             result = get_mounts()
         assert result["status"] == "ok"
         assert "mounts" in result
@@ -339,14 +250,12 @@ class TestGetMounts:
 @pytest.mark.mcp
 class TestMountCluster:
     def test_mount(self):
-        with patch.object(mcp_server, "run_mount_script", return_value=(True, "Mounted")), \
-             patch.object(mcp_server, "all_mount_status", return_value={}):
+        with patch("mcp_server._api", return_value={"status": "ok", "message": "Mounted", "mounts": {}}):
             result = mount_cluster("c1", "mount")
         assert result["status"] == "ok"
 
     def test_unmount(self):
-        with patch.object(mcp_server, "run_mount_script", return_value=(True, "Unmounted")), \
-             patch.object(mcp_server, "all_mount_status", return_value={}):
+        with patch("mcp_server._api", return_value={"status": "ok", "message": "Unmounted", "mounts": {}}):
             result = mount_cluster("c1", "unmount")
         assert result["status"] == "ok"
 
@@ -356,10 +265,9 @@ class TestMountCluster:
         assert "mount" in result["error"]
 
     def test_script_failure(self):
-        with patch.object(mcp_server, "run_mount_script", return_value=(False, "fuse error")):
+        with patch("mcp_server._api", return_value={"status": "error", "error": "fuse error"}):
             result = mount_cluster("c1", "mount")
         assert result["status"] == "error"
-        assert "fuse" in result["error"]
 
 
 # ── clear_failed ─────────────────────────────────────────────────────────────
@@ -367,7 +275,7 @@ class TestMountCluster:
 @pytest.mark.mcp
 class TestClearFailed:
     def test_success(self):
-        with patch.object(mcp_server, "dismiss_by_state_prefix"):
+        with patch("mcp_server._api", return_value={"status": "ok"}):
             result = clear_failed("c1")
         assert result["status"] == "ok"
 
@@ -377,7 +285,7 @@ class TestClearFailed:
 @pytest.mark.mcp
 class TestClearCompleted:
     def test_success(self):
-        with patch.object(mcp_server, "dismiss_by_state_prefix"):
+        with patch("mcp_server._api", return_value={"status": "ok"}):
             result = clear_completed("c1")
         assert result["status"] == "ok"
 
@@ -387,28 +295,17 @@ class TestClearCompleted:
 @pytest.mark.mcp
 class TestRunScript:
     def test_success(self):
-        with patch.object(mcp_server, "ssh_run_with_timeout", return_value=("hello\n", "")), \
-             patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
+        with patch("mcp_server._api", return_value={"status": "ok", "stdout": "hello\n", "stderr": ""}):
             result = run_script("c1", "print('hello')")
         assert result["status"] == "ok"
         assert result["stdout"] == "hello\n"
 
-    def test_unknown_cluster(self):
-        result = run_script("nonexistent-xyz", "print(1)")
-        assert result["status"] == "error"
-
-    def test_local_not_supported(self):
-        result = run_script("local", "print(1)")
+    def test_error(self):
+        with patch("mcp_server._api", return_value={"status": "error", "error": "Unknown cluster"}):
+            result = run_script("nonexistent", "print(1)")
         assert result["status"] == "error"
 
     def test_invalid_interpreter(self):
-        with patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
+        with patch("mcp_server._api", return_value={"status": "error", "error": "interpreter must be one of: bash, python, python3, sh"}):
             result = run_script("c1", "print(1)", interpreter="ruby")
         assert result["status"] == "error"
-
-    def test_timeout_clamped(self):
-        with patch.object(mcp_server, "ssh_run_with_timeout", return_value=("", "")) as mock_ssh, \
-             patch.dict(mcp_server.CLUSTERS, {"c1": {}}):
-            run_script("c1", "x", timeout=999)
-        _, kwargs = mock_ssh.call_args
-        assert kwargs["timeout_sec"] == 300

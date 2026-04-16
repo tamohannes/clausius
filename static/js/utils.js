@@ -473,15 +473,34 @@ function jobGpuCount(nodes, gres) {
   return perNode * n;
 }
 
+const _STAGE_SUFFIX_RE = new RegExp(
+  '(?:-|_)(?:' +
+  '(?:probes?|sep)[-_](?:server|l\\d+)' +
+  '|(?:paths?|server)[-_](?:probes?|paths?)' +
+  '|path[-_](?:analytical|computational|knowledge)(?:-c\\d+)?' +
+  '|paths?[-_]server' +
+  '|merge[-_](?:analytical|computational|knowledge)' +
+  '|(?:eval[-_])?judge[-_](?:server|client|eval)' +
+  '|gate(?:[-_](?:classify|prep))?' +
+  '|chunk\\d+' +
+  '|server' +
+  '|summarize(?:[-_]results?)?' +
+  '|judge(?:[-_]rs\\d+)?' +
+  '|rs\\d+(?:[-_]c\\d+)?' +
+  ')$', 'i'
+);
+
 function groupKeyForJob(name) {
-  const n = (name || '').trim();
+  let n = (name || '').trim();
   if (!n) return 'misc';
   const evalMatch = n.match(/^(eval-[a-z0-9_]+)/i);
   if (evalMatch) return evalMatch[1].toLowerCase();
-  return n
-    .replace(/(?:-|_)(?:judge|summarize[-_]results?)(?:-rs\d+)?$/i, '')
-    .replace(/(?:-|_)rs\d+$/i, '')
-    .toLowerCase();
+  let prev = null;
+  while (prev !== n) {
+    prev = n;
+    n = n.replace(_STAGE_SUFFIX_RE, '');
+  }
+  return n.toLowerCase();
 }
 
 function historySearchValues(row) {
@@ -609,6 +628,22 @@ function groupJobsByDependency(jobs) {
   }
   for (const ids of Object.values(outputDirGroups)) {
     for (let i = 1; i < ids.length; i++) union(ids[0], ids[i]);
+  }
+
+  // Merge resubmissions: if jobs share the same group key and one set has
+  // a run_id while the other doesn't, they're a skip_filled retry — merge.
+  const nameGroups = {};
+  for (const j of jobs) {
+    const gk = groupKeyForJob(j.name);
+    if (!nameGroups[gk]) nameGroups[gk] = [];
+    nameGroups[gk].push(j);
+  }
+  for (const sameNameJobs of Object.values(nameGroups)) {
+    const withRun = sameNameJobs.filter(j => j.run_id);
+    const withoutRun = sameNameJobs.filter(j => !j.run_id);
+    if (withRun.length && withoutRun.length) {
+      for (const j of withoutRun) union(j.jobid, withRun[0].jobid);
+    }
   }
 
   // Collect groups.

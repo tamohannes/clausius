@@ -430,6 +430,147 @@ def _discover_local_dir_files(mounted_dir, remote_dir, job_id, seen_paths, files
         _append_discovered_file(files, seen_paths, remote_path, raw_label)
 
 
+_CONTAINER_MOUNTS_RE = re.compile(r'--container-mounts\s+(\S+)')
+_OUTPUT_FILE_RE = re.compile(r'\+\+output_file=(\S+)')
+_OUTPUT_DIR_RE = re.compile(r'\+\+output_dir=(\S+)')
+_OUTPUT_FILE_DASH_RE = re.compile(r'--output_file[= ](\S+)')
+_OUTPUT_DIR_DASH_RE = re.compile(r'--output_dir[= ](\S+)')
+
+
+def _resolve_container_path(container_path, mounts_str):
+    """Resolve a container-internal path to a host path using mount mappings.
+
+    mounts_str is a comma-separated list of src:dst pairs, e.g.
+    '/lustre/fsw/htamoyan:/workspace,/lustre/models:/hf_models'
+    """
+    if not container_path or not mounts_str:
+        return ""
+    for mapping in mounts_str.split(","):
+        parts = mapping.split(":")
+        if len(parts) < 2:
+            continue
+        src, dst = parts[0], parts[1]
+        if not dst:
+            continue
+        if container_path == dst:
+            return src
+        if container_path.startswith(dst + "/"):
+            return src + container_path[len(dst):]
+    return ""
+
+
+_EVAL_STRIP_NAMES = {
+    "eval-results", "eval-logs", "tmp-eval-results", "paths",
+    "hle", "gpqa", "math", "aime", "gsm8k", "mmlu",
+}
+
+
+def _walk_up_to_experiment_root(path):
+    """Walk up from a deep eval output path to the experiment root.
+
+    Strips known NeMo-Skills directory names (eval-results, benchmark
+    names, paths) and intermediate path-specific dirs (analytical,
+    computational, etc.) to find the broadest useful experiment root.
+    """
+    cur = path.rstrip("/")
+    for _ in range(8):
+        parent = os.path.dirname(cur)
+        if not parent or parent == cur:
+            break
+        basename = os.path.basename(cur)
+        if basename in _EVAL_STRIP_NAMES:
+            cur = parent
+            continue
+        parent_base = os.path.basename(parent)
+        if parent_base in _EVAL_STRIP_NAMES:
+            cur = parent
+            continue
+        break
+    return cur
+
+
+def _experiment_output_dir_from_run(all_contents):
+    """Extract the real (host-side) experiment output directory.
+
+    all_contents is a list of file contents from the run directory: the
+    outer sbatch script (has --container-mounts) and inner run scripts
+    (have ++output_file).  We search all of them for output paths and
+    mount mappings, then resolve container paths to host paths.
+    """
+    if not all_contents:
+        return ""
+    container_path = ""
+    mounts_str = ""
+    for content in all_contents:
+        if not content:
+            continue
+        if not container_path:
+            m = _OUTPUT_FILE_RE.search(content)
+            if not m:
+                m = _OUTPUT_FILE_DASH_RE.search(content)
+            if m:
+                container_path = os.path.dirname(m.group(1))
+            else:
+                m = _OUTPUT_DIR_RE.search(content)
+                if not m:
+                    m = _OUTPUT_DIR_DASH_RE.search(content)
+                if m:
+                    container_path = m.group(1)
+        if not mounts_str:
+            mm = _CONTAINER_MOUNTS_RE.search(content)
+            if mm:
+                mounts_str = mm.group(1)
+
+    if not container_path:
+        return ""
+
+    resolved = ""
+    if container_path.startswith("/lustre") or container_path.startswith("/home"):
+        resolved = container_path
+    elif mounts_str:
+        resolved = _resolve_container_path(container_path, mounts_str)
+
+    if resolved:
+        return _walk_up_to_experiment_root(resolved)
+    return ""
+
+
+def _read_run_scripts_local(mounted_run_dir):
+    """Read the sbatch script and inner run scripts from a locally mounted
+    nemo-run directory. Returns a list of file contents."""
+    if not mounted_run_dir or not os.path.isdir(mounted_run_dir):
+        return []
+    contents = []
+    try:
+        entries = os.listdir(mounted_run_dir)
+    except OSError:
+        return []
+    for name in entries:
+        if name.endswith("_sbatch.sh") or name.endswith(".sbatch.sh"):
+            path = os.path.join(mounted_run_dir, name)
+            if os.path.isfile(path):
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                        contents.append(fh.read())
+                except Exception:
+                    pass
+    scripts_dir = os.path.join(mounted_run_dir, "nemo-run", "scripts")
+    if os.path.isdir(scripts_dir):
+        try:
+            for name in sorted(os.listdir(scripts_dir)):
+                if name.startswith("nemo-run-") and name.endswith(".sh"):
+                    path = os.path.join(scripts_dir, name)
+                    if os.path.isfile(path):
+                        try:
+                            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                                contents.append(fh.read())
+                        except Exception:
+                            pass
+        except OSError:
+            pass
+    return contents
+
+
 def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
     """Try to discover log files from the local mount without SSH.
 
@@ -463,6 +604,17 @@ def _try_local_discovery(cluster_name, job_id, db_path, output_dir=""):
                 mounted_output, output_dir, job_id, seen_paths, files,
                 include_recognized=True,
             )
+
+    run_dir = os.path.dirname(logdir) if logdir else (output_dir or "")
+    if run_dir:
+        mounted_run = resolve_mounted_path(cluster_name, run_dir, want_dir=True)
+        run_scripts = _read_run_scripts_local(mounted_run)
+        exp_output = _experiment_output_dir_from_run(run_scripts)
+        if exp_output and exp_output not in seen_dirs:
+            mounted_exp = resolve_mounted_path(cluster_name, exp_output, want_dir=True)
+            if mounted_exp and os.path.isdir(mounted_exp):
+                seen_dirs.add(exp_output)
+                dirs.append({"label": "experiment output", "path": exp_output})
 
     if not files and not dirs:
         return None
@@ -529,6 +681,78 @@ fi
 
 [ -n "$STDOUT" ] && [ -f "$STDOUT" ] && emit "$(basename "$STDOUT")" "$STDOUT"
 [ -n "$STDERR" ] && [ "$STDERR" != "$STDOUT" ] && [ -f "$STDERR" ] && emit "$(basename "$STDERR")" "$STDERR"
+
+# --- Resolve real output_dir from batch script container mounts ---
+RUNDIR=""
+if [ -n "$LOGDIR" ]; then
+  RUNDIR=$(dirname "$LOGDIR")
+fi
+if [ -n "$RUNDIR" ] && [ -d "$RUNDIR" ]; then
+  MOUNTS=""
+  OUTFILE=""
+  OUTDIR_ARG=""
+  # Collect all script files: outer sbatch + inner run scripts
+  ALL_SCRIPTS=""
+  for F in "$RUNDIR"/nemo-run_sbatch.sh "$RUNDIR"/*_sbatch.sh "$RUNDIR"/*.sbatch.sh; do
+    [ -f "$F" ] && ALL_SCRIPTS="$ALL_SCRIPTS $F"
+  done
+  SCRIPTS_DIR="$RUNDIR/nemo-run/scripts"
+  if [ -d "$SCRIPTS_DIR" ]; then
+    for F in "$SCRIPTS_DIR"/nemo-run-*.sh; do
+      [ -f "$F" ] && ALL_SCRIPTS="$ALL_SCRIPTS $F"
+    done
+  fi
+  for F in $ALL_SCRIPTS; do
+    if [ -z "$MOUNTS" ]; then
+      MOUNTS=$(grep -oP '\\-\\-container-mounts\\s+\\K\\S+' "$F" 2>/dev/null | head -1)
+    fi
+    if [ -z "$OUTFILE" ]; then
+      OUTFILE=$(grep -oP '\\+\\+output_file=\\K\\S+' "$F" 2>/dev/null | head -1)
+    fi
+    if [ -z "$OUTFILE" ]; then
+      OUTFILE=$(grep -oP '\\-\\-output_file=\\K\\S+' "$F" 2>/dev/null | head -1)
+    fi
+    if [ -z "$OUTDIR_ARG" ]; then
+      OUTDIR_ARG=$(grep -oP '\\+\\+output_dir=\\K\\S+' "$F" 2>/dev/null | head -1)
+    fi
+    if [ -z "$OUTDIR_ARG" ]; then
+      OUTDIR_ARG=$(grep -oP '\\-\\-output_dir=\\K\\S+' "$F" 2>/dev/null | head -1)
+    fi
+  done
+  CONTAINER_PATH=""
+  if [ -n "$OUTFILE" ]; then
+    CONTAINER_PATH=$(dirname "$OUTFILE")
+  elif [ -n "$OUTDIR_ARG" ]; then
+    CONTAINER_PATH="$OUTDIR_ARG"
+  fi
+  if [ -n "$CONTAINER_PATH" ]; then
+    RESOLVED=""
+    if [ -n "$MOUNTS" ]; then
+      IFS=',' read -ra MLIST <<< "$MOUNTS"
+      for M in "${{MLIST[@]}}"; do
+        SRC=$(echo "$M" | cut -d: -f1)
+        DST=$(echo "$M" | cut -d: -f2)
+        if [ -z "$DST" ]; then continue; fi
+        case "$CONTAINER_PATH" in
+          "$DST"/*)
+            REST="${{CONTAINER_PATH#$DST}}"
+            RESOLVED="$SRC$REST"
+            break
+            ;;
+          "$DST")
+            RESOLVED="$SRC"
+            break
+            ;;
+        esac
+      done
+    fi
+    if [ -n "$RESOLVED" ] && [ -d "$RESOLVED" ]; then
+      echo "DIR:experiment output:$RESOLVED"
+    elif [ -z "$RESOLVED" ] && [ -d "$CONTAINER_PATH" ]; then
+      echo "DIR:experiment output:$CONTAINER_PATH"
+    fi
+  fi
+fi
 """
     try:
         out, _ = ssh_run_with_timeout(cluster_name, script, timeout_sec=25)

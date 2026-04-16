@@ -1,10 +1,7 @@
-"""MCP server import and health check smoke tests.
-
-The old HTTP transport layer (_api_get, _api_post) no longer exists.
-This file verifies the MCP server module loads and the health_check tool works.
-"""
+"""MCP server import and health check smoke tests (HTTP proxy architecture)."""
 
 import pytest
+from unittest.mock import patch
 
 from mcp_server import health_check
 
@@ -17,7 +14,13 @@ class TestMcpImport:
         assert hasattr(mcp_server, "health_check")
 
     def test_health_check_returns_ok(self):
-        result = health_check()
+        with patch("mcp_server._api", return_value={"status": "ok", "board_version": 42}):
+            result = health_check()
         assert result["status"] == "ok"
-        assert isinstance(result["clusters"], list)
-        assert isinstance(result["db"], bool)
+        assert result["service"] == "connected"
+
+    def test_health_check_service_down(self):
+        with patch("mcp_server._api", return_value={"status": "error", "error": "unreachable"}):
+            result = health_check()
+        assert result["status"] == "ok"
+        assert result["service"] == "unreachable"

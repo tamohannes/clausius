@@ -414,6 +414,31 @@ def _cleanup_mounted_logs(cluster_name, job_id, log_path, cleaned_list):
                         pass
 
 
+@api.route("/api/jobs_summary")
+def api_jobs_summary():
+    """One-line-per-cluster overview: running/pending/failed counts (MCP resource proxy)."""
+    touch_demand()
+    snapshot = build_board_snapshot(schedule_prefetch_active=False)
+    lines = []
+    total_r = total_p = total_f = 0
+    for cname, cdata in snapshot.items():
+        if cdata.get("status") == "error":
+            lines.append(f"{cname}: unreachable")
+            continue
+        jobs = cdata.get("jobs", [])
+        r = sum(1 for j in jobs if j.get("state", "").upper() == "RUNNING")
+        p = sum(1 for j in jobs if j.get("state", "").upper() == "PENDING")
+        f = sum(1 for j in jobs if "FAIL" in j.get("state", "").upper())
+        total_r += r; total_p += p; total_f += f
+        parts = []
+        if r: parts.append(f"{r} running")
+        if p: parts.append(f"{p} pending")
+        if f: parts.append(f"{f} failed")
+        lines.append(f"{cname}: {', '.join(parts) if parts else 'idle'}")
+    summary = f"Total: {total_r} running, {total_p} pending, {total_f} failed\n" + "\n".join(lines)
+    return jsonify({"status": "ok", "summary": summary})
+
+
 @api.route("/api/jobs/<cluster>")
 def api_jobs_cluster(cluster):
     if cluster not in CLUSTERS:
@@ -1643,6 +1668,146 @@ def api_partition_summary():
     return jsonify({"status": "ok", "clusters": data})
 
 
+@api.route("/api/where_to_submit", methods=["POST"])
+def api_where_to_submit():
+    """Rank clusters by WDS score for job submission (MCP proxy target)."""
+    from .aihub import get_ppp_allocations as _wts_alloc, get_my_fairshare as _wts_fs
+    from .partitions import get_partition_summary as _wts_ps
+    from .jobs import fetch_team_jobs as _wts_tj
+
+    payload = request.get_json(silent=True) or {}
+    nodes = int(payload.get("nodes", 1))
+    gpus_per_node = int(payload.get("gpus_per_node", 8))
+    gpu_type = payload.get("gpu_type", "")
+
+    job_gpus = nodes * gpus_per_node
+    pref_gpu = gpu_type.lower() if gpu_type else ""
+    me = DEFAULT_USER
+
+    def _fetch_parallel():
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            f_alloc = pool.submit(_wts_alloc)
+            f_fs = pool.submit(_wts_fs)
+            f_parts = pool.submit(_wts_ps)
+            f_tj = pool.submit(lambda: {c: _wts_tj(c) for c in CLUSTERS if c != "local"})
+        return f_alloc.result(), f_fs.result(), f_parts.result(), f_tj.result()
+
+    try:
+        alloc, my_fs, part_clusters, tj_clusters = _fetch_parallel()
+    except Exception as exc:
+        return jsonify({"status": "error", "error": str(exc)}), 500
+
+    if not alloc:
+        return jsonify({"status": "error", "error": "Could not fetch allocation data"}), 500
+
+    my_fs_clusters = (my_fs or {}).get("clusters", {})
+    part_clusters = part_clusters or {}
+    tj_clusters = tj_clusters or {}
+    team_allocs = settings_response().get("team_gpu_allocations", {})
+
+    recommendations = []
+    my_total_running = 0
+    my_total_pending = 0
+
+    all_cluster_names = set(alloc.get("clusters", {}).keys())
+    for cn in CLUSTERS:
+        if cn != "local":
+            all_cluster_names.add(cn)
+
+    import math
+    for cn in all_cluster_names:
+        cd = alloc.get("clusters", {}).get(cn, {})
+        has_ppp = bool(cd.get("accounts"))
+        cluster_gpu = (cd.get("gpu_type") or CLUSTERS.get(cn, {}).get("gpu_type") or "").lower()
+        ta = team_allocs.get(cn)
+        team_num = int(ta) if isinstance(ta, (int, float)) and ta > 0 else (None if ta == "any" else None)
+        tj = (tj_clusters.get(cn) or {}).get("summary", {})
+        tj_users = tj.get("by_user", {})
+        team_running = tj.get("total_running", 0)
+        team_pending = tj.get("total_pending", 0) + tj.get("total_dependent", 0)
+        my_data = tj_users.get(me, {})
+        my_r = my_data.get("running", 0)
+        my_p = my_data.get("pending", 0) + my_data.get("dependent", 0)
+        my_total_running += my_r
+        my_total_pending += my_p
+        same_gpu = (pref_gpu == cluster_gpu) if pref_gpu else True
+        ps = part_clusters.get(cn, {})
+        idle_nodes = ps.get("idle_nodes", 0)
+        pending_queue = ps.get("pending_jobs", 0)
+        gpn = ps.get("partitions", [{}])[0].get("gpus_per_node", 0) if ps.get("partitions") else CLUSTERS.get(cn, {}).get("gpus_per_node", 8) or 8
+        idle_gpus = idle_nodes * gpn
+
+        notes = []
+        if not has_ppp:
+            notes.append("No PPP allocation data — fairshare unknown")
+        if ta is None or ta == 0:
+            notes.append(f"No informal team allocation set for {cn}")
+        elif team_num is not None and team_running >= team_num:
+            notes.append(f"Team over informal quota ({team_running}/{team_num} GPUs)")
+
+        accounts = []
+        wds = 0
+        if has_ppp:
+            for acct_name, ad in cd.get("accounts", {}).items():
+                ppp_headroom = ad.get("headroom", 0)
+                level_fs = ad.get("level_fs", 0)
+                my_acct_fs = my_fs_clusters.get(cn, {}).get(acct_name, {})
+                my_level_fs = round(my_acct_fs.get("level_fs", 0), 2) if my_acct_fs else 0
+                free = min(ppp_headroom, max(0, team_num - team_running)) if team_num is not None else ppp_headroom
+                hard_capacity = max(ppp_headroom, free)
+                resource_gate = min(1, hard_capacity / max(job_gpus, 1), idle_nodes / max(nodes, 1))
+                team_penalty = 0.7 if (team_num is not None and free <= 0) else 1.0
+                effective_my_fs = my_level_fs if my_level_fs > 0 else level_fs
+                my_fs_score = min(effective_my_fs / 1.5, 1)
+                ppp_fs_score = min(level_fs / 1.5, 1)
+                queue_score = 1 - min(math.log1p(pending_queue / max(idle_nodes, 1)) / math.log1p(50), 1)
+                occ = cd.get("cluster_occupied_gpus", 0)
+                tot = cd.get("cluster_total_gpus", 0)
+                occ_pct = round(occ / tot * 100) if tot > 0 else 0
+                occupancy_factor = 1.15 - 0.30 * min(occ_pct / 100, 1)
+                machine_score = 1.0 if same_gpu else 0.85
+                priority_blend = 0.55 * my_fs_score + 0.20 * ppp_fs_score + 0.25 * queue_score
+                a_wds = max(0, min(100, round(100 * resource_gate * priority_blend * machine_score * team_penalty * occupancy_factor)))
+                accounts.append({
+                    "account": acct_name, "account_short": acct_name.split("_")[-1] if "_" in acct_name else acct_name,
+                    "wds": a_wds, "ppp_level_fs": round(level_fs, 2), "my_level_fs": my_level_fs,
+                    "headroom": ppp_headroom, "free_for_team": free,
+                    "gpus_consumed": ad.get("gpus_consumed", 0), "gpus_allocated": ad.get("gpus_allocated", 0),
+                })
+            accounts.sort(key=lambda a: -a["wds"])
+        else:
+            resource_gate = min(1, idle_nodes / max(nodes, 1))
+            machine_score = 1.0 if same_gpu else 0.85
+            wds = max(0, min(100, round(100 * resource_gate * 0.5 * machine_score)))
+
+        best_wds = accounts[0]["wds"] if accounts else wds
+        best_acct = accounts[0]["account"] if accounts else ""
+
+        recommendations.append({
+            "cluster": cn,
+            "gpu_type": (cd.get("gpu_type") or CLUSTERS.get(cn, {}).get("gpu_type") or "").upper(),
+            "same_gpu_type": same_gpu,
+            "wds": best_wds,
+            "best_account": best_acct,
+            "accounts": accounts,
+            "idle_gpus": idle_gpus,
+            "idle_nodes": idle_nodes,
+            "pending_queue": pending_queue,
+            "cluster_occupancy_pct": cd.get("cluster_occupied_gpus", 0) * 100 // max(cd.get("cluster_total_gpus", 1), 1) if cd else 0,
+            "team_running": team_running,
+            "team_pending": team_pending,
+            "team_alloc": ta if ta is not None else "not set",
+            "my_running": my_r,
+            "my_pending": my_p,
+            "notes": notes,
+        })
+
+    recommendations.sort(key=lambda r: -r["wds"])
+    return jsonify({"status": "ok", "recommendations": recommendations,
+                    "my_total_running": my_total_running, "my_total_pending": my_total_pending,
+                    "job_gpus_requested": job_gpus})
+
+
 @api.route("/api/recommend", methods=["POST"])
 def api_recommend():
     from .recommendations import recommend
@@ -1897,6 +2062,113 @@ def api_logbook_export_docx(project, entry_id):
         as_attachment=True,
         download_name=filename,
     )
+
+
+@api.route("/api/logbook/bulk_read", methods=["POST"])
+def api_logbook_bulk_read():
+    """Bulk-read full logbook entries (MCP proxy target)."""
+    from .logbooks import list_logbook_projects
+    payload = request.get_json(silent=True) or {}
+    project = payload.get("project", "")
+    entry_type = payload.get("entry_type", "")
+    sort = payload.get("sort", "created_at")
+    limit_per_project = int(payload.get("limit_per_project", 200))
+    max_entries = int(payload.get("max_entries", 1000))
+
+    if sort not in ("edited_at", "created_at", "title"):
+        return jsonify({"status": "error", "error": "sort must be one of: edited_at, created_at, title"}), 400
+    if entry_type and entry_type not in ("note", "plan"):
+        return jsonify({"status": "error", "error": "entry_type must be 'note', 'plan', or omitted"}), 400
+
+    projects = [project] if project else list_logbook_projects()
+    if not projects:
+        return jsonify({"status": "ok", "count": 0, "truncated": False, "projects": [], "entries": [], "errors": {}})
+
+    entries = []
+    errors = {}
+    truncated = False
+    for p in projects:
+        listed = _lb_list(p, sort=sort, limit=limit_per_project, entry_type=entry_type or None)
+        if isinstance(listed, dict) and listed.get("status") == "error":
+            errors[p] = listed.get("error", "Failed")
+            continue
+        for item in (listed if isinstance(listed, list) else []):
+            eid = item.get("id")
+            if eid is None:
+                continue
+            full = _lb_get(p, eid)
+            if isinstance(full, dict) and full.get("status") != "error":
+                entries.append(full)
+            if len(entries) >= max_entries:
+                truncated = True
+                break
+        if truncated:
+            break
+    return jsonify({"status": "ok", "count": len(entries), "truncated": truncated,
+                    "projects": projects, "entries": entries, "errors": errors})
+
+
+@api.route("/api/logbook/find", methods=["POST"])
+def api_logbook_find():
+    """Find logbook entries by substring/regex (MCP proxy target)."""
+    import re as _re
+    from .logbooks import list_logbook_projects
+    payload = request.get_json(silent=True) or {}
+    pattern = payload.get("pattern", "")
+    project = payload.get("project", "")
+    field = payload.get("field", "title")
+    use_regex = bool(payload.get("regex", False))
+    entry_type = payload.get("entry_type", "")
+    full_body = payload.get("full_body", True)
+    limit = int(payload.get("limit", 50))
+
+    if field not in ("title", "body", "both"):
+        return jsonify({"status": "error", "error": "field must be 'title', 'body', or 'both'"}), 400
+
+    if use_regex:
+        try:
+            compiled = _re.compile(pattern, _re.IGNORECASE)
+        except _re.error as e:
+            return jsonify({"status": "error", "error": f"Invalid regex: {e}"}), 400
+        test = lambda text: bool(compiled.search(text or ""))
+    else:
+        pat_lower = pattern.lower()
+        test = lambda text: pat_lower in (text or "").lower()
+
+    projects = [project] if project else list_logbook_projects()
+    results = []
+    for p in projects:
+        listed = _lb_list(p, sort="edited_at", limit=500, entry_type=entry_type or None)
+        if not isinstance(listed, list):
+            continue
+        for item in listed:
+            eid = item.get("id")
+            if eid is None:
+                continue
+            title_text = item.get("title", "")
+            title_match = test(title_text) if field in ("title", "both") else False
+            if field == "title" and not title_match:
+                continue
+            if field in ("body", "both") and not title_match:
+                full_entry = _lb_get(p, eid)
+                if not isinstance(full_entry, dict) or full_entry.get("status") == "error":
+                    continue
+                if not test(full_entry.get("body", "")):
+                    continue
+                results.append(full_entry)
+            elif full_body:
+                full_entry = _lb_get(p, eid)
+                if isinstance(full_entry, dict) and full_entry.get("status") != "error":
+                    results.append(full_entry)
+                else:
+                    results.append(item)
+            else:
+                results.append(item)
+            if len(results) >= limit:
+                break
+        if len(results) >= limit:
+            break
+    return jsonify({"status": "ok", "count": len(results), "entries": results})
 
 
 @api.route("/api/logbook/search")

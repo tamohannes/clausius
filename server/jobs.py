@@ -367,6 +367,24 @@ def get_job_stats_cached(cluster, job_id, force=False):
 
 # ─── Run detection & metadata ────────────────────────────────────────────────
 
+_STAGE_SUFFIX_RE = re.compile(
+    r'(?:-|_)(?:'
+    r'(?:probes?|sep)[-_](?:server|l\d+)'
+    r'|(?:paths?|server)[-_](?:probes?|paths?)'
+    r'|path[-_](?:analytical|computational|knowledge)(?:-c\d+)?'
+    r'|paths?[-_]server'
+    r'|merge[-_](?:analytical|computational|knowledge)'
+    r'|(?:eval[-_])?judge[-_](?:server|client|eval)'
+    r'|gate(?:[-_](?:classify|prep))?'
+    r'|chunk\d+'
+    r'|server'
+    r'|summarize(?:[-_]results?)?'
+    r'|judge(?:[-_]rs\d+)?'
+    r'|rs\d+(?:[-_]c\d+)?'
+    r')$', re.I,
+)
+
+
 def _group_key_for_job(name):
     """Server-side equivalent of the frontend's groupKeyForJob()."""
     n = (name or "").strip()
@@ -375,11 +393,11 @@ def _group_key_for_job(name):
     m = _EVAL_PREFIX_RE.match(n)
     if m:
         return m.group(1).lower()
-    return re.sub(
-        r'(?:-|_)rs\d+$', '',
-        re.sub(r'(?:-|_)(?:judge|summarize[-_]results?)(?:-rs\d+)?$', '', n, flags=re.I),
-        flags=re.I,
-    ).lower()
+    prev = None
+    while prev != n:
+        prev = n
+        n = _STAGE_SUFFIX_RE.sub('', n)
+    return n.lower()
 
 
 def _job_group_ts(job):
@@ -432,7 +450,7 @@ def _bucket_same_name_jobs(jobs, gap_sec=_RUN_NAME_MERGE_GAP_SEC):
     return buckets
 
 
-def _group_jobs_for_runs(jobs):
+def _group_jobs_for_runs(jobs, cluster=None):
     """Group jobs using union-find on dependency chains + name prefixes.
 
     Returns list of (group_key, root_job_id, [job_ids]).
@@ -459,8 +477,60 @@ def _group_jobs_for_runs(jobs):
     for j in jobs:
         key = _group_key_for_job(j.get("name", ""))
         name_groups.setdefault(key, []).append(j)
+
+    # Look up existing run_id assignments so resubmissions (skip_filled)
+    # that reuse the same job name merge into the original run even when
+    # the submission-time gap exceeds _RUN_NAME_MERGE_GAP_SEC.
+    existing_run_for_job = {}
+    if cluster:
+        all_ids = [j["jobid"] for j in jobs]
+        if all_ids:
+            con = get_db()
+            ph = ",".join("?" for _ in all_ids)
+            rows = con.execute(
+                f"SELECT job_id, run_id FROM job_history "
+                f"WHERE cluster=? AND job_id IN ({ph}) AND run_id IS NOT NULL AND run_id != ''",
+                [cluster] + all_ids,
+            ).fetchall()
+            con.close()
+            for r in rows:
+                existing_run_for_job[r["job_id"]] = r["run_id"]
+
     for same_name_jobs in name_groups.values():
-        for bucket in _bucket_same_name_jobs(same_name_jobs):
+        buckets = _bucket_same_name_jobs(same_name_jobs)
+
+        # Merge buckets that share an existing run_id — this handles
+        # resubmissions where the time gap is large but the jobs belong
+        # to the same logical experiment.
+        if len(buckets) > 1 and existing_run_for_job:
+            run_to_bucket = {}
+            for bi, bucket in enumerate(buckets):
+                for job in bucket:
+                    rid = existing_run_for_job.get(job["jobid"])
+                    if rid and rid not in run_to_bucket:
+                        run_to_bucket[rid] = bi
+            # Merge any bucket whose jobs don't have a run_id yet into
+            # the bucket that owns the existing run.
+            if run_to_bucket:
+                anchor_bi = next(iter(run_to_bucket.values()))
+                merged = list(buckets[anchor_bi])
+                for bi, bucket in enumerate(buckets):
+                    if bi == anchor_bi:
+                        continue
+                    bucket_rids = {
+                        existing_run_for_job.get(j["jobid"])
+                        for j in bucket
+                    } - {None}
+                    if not bucket_rids or bucket_rids & set(run_to_bucket):
+                        merged.extend(bucket)
+                    else:
+                        # Different existing run — keep separate
+                        ids = [job["jobid"] for job in bucket]
+                        for k in range(1, len(ids)):
+                            union(ids[0], ids[k])
+                buckets = [merged]
+
+        for bucket in buckets:
             ids = [job["jobid"] for job in bucket]
             for i in range(1, len(ids)):
                 union(ids[0], ids[i])
@@ -482,7 +552,7 @@ def _detect_and_register_runs(cluster, jobs):
     """Create run records for job groups and schedule metadata capture."""
     if not jobs:
         return
-    groups = _group_jobs_for_runs(jobs)
+    groups = _group_jobs_for_runs(jobs, cluster=cluster)
 
     con = get_db()
     all_job_ids = [jid for _, _, jids in groups for jid in jids]
@@ -1290,7 +1360,8 @@ def _reconcile_stale_pinned_active_rows(cluster, live_ids):
         if not jid:
             continue
         final = finals.get(jid, {})
-        final_state = (final.get("state", "") or "").upper().split()[0]
+        parts = (final.get("state", "") or "").upper().split()
+        final_state = parts[0] if parts else ""
         if not final_state or final_state in _STALE_PINNED_ACTIVE_STATES:
             hide_ids.append(jid)
             continue
