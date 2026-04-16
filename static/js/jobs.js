@@ -615,7 +615,7 @@ function renderCard(name, data) {
       const nameCell = `${indent}${depArrow}<span class="${nameCls}" title="${j.name}">${highlightJobName(j.name, jnHL.prefix, jnHL.suffix)}</span>${backupBtn}`;
 
       const _rowShaded = j.project_color && j.campaign ? campaignShade(j.project_color, j.campaign) : (j.project_color || '');
-      const _rowBg = _rowShaded ? `background:${lightenColor(_rowShaded)};` : '';
+      const _rowBg = _rowShaded ? `background-color:${lightenColor(_rowShaded)};` : '';
       const _prog = resolveProgress(name, j.jobid, j.progress, j.state, j.progress_source);
       const _jobMeta = { nodes: j.nodes, gres: j.gres, partition: j.partition, timelimit: j.timelimit };
       const cpuCls = isCpuUtility ? ' cpu-row' : '';
