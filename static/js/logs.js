@@ -554,8 +554,8 @@ function _mdInline(text) {
   s = s.replace(/\*(.+?)\*/g, '<em>$1</em>');
   s = s.replace(/`(.+?)`/g, '<code class="md-inline-code">$1</code>');
   s = s.replace(/~~(.+?)~~/g, '<del>$1</del>');
-  s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" class="lb-inline-img" loading="lazy">');
-  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/!\[([^\]]*)\]\(((?:https?:\/\/|\/|\.{0,2}\/)[^)]+)\)/g, '<img src="$2" alt="$1" class="lb-inline-img" loading="lazy">');
+  s = s.replace(/\[([^\]]+)\]\(((?:https?:\/\/|\/|\.{0,2}\/|#)[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
   return s;
 }
 
@@ -841,8 +841,8 @@ function markdownToHtml(raw) {
     if (_isHtmlEmbed(line.trim())) {
       html += _renderHtmlEmbed(line.trim());
     }
-    else if (/^\s*!\[.*?\]\(.*?\)\s*$/.test(line)) {
-      const m = line.match(/!\[([^\]]*)\]\(([^)]+)\)/);
+    else if (/^\s*!\[.*?\]\((?:https?:\/\/|\/|\.{0,2}\/).*?\)\s*$/.test(line)) {
+      const m = line.match(/!\[([^\]]*)\]\(((?:https?:\/\/|\/|\.{0,2}\/)[^)]+)\)/);
       if (m) {
         figCounter++;
         lastWasFigure = true;

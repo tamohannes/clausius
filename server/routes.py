@@ -2138,12 +2138,52 @@ def api_sdk_ingest():
             _ingest_job_state(run_uuid, payload)
             bump_version()
 
-        if event_type == "metric_logged" and payload.get("key") == "gpu_telemetry":
-            _ingest_gpu_telemetry(run_uuid, payload)
+        if event_type == "metric_logged":
+            if payload.get("key") == "gpu_telemetry":
+                _ingest_gpu_telemetry(run_uuid, payload)
+            elif payload.get("key") == "progress":
+                _ingest_progress(run_uuid, payload)
+                bump_version()
 
         accepted += 1
 
     return jsonify({"status": "ok", "accepted": accepted})
+
+
+def _ingest_progress(run_uuid, payload):
+    """Handle progress metric events from the in-container monitor."""
+    try:
+        from .config import _cache_set, _progress_cache, _progress_source_cache, PROGRESS_TTL_SEC
+        from .db import get_run_by_uuid, cache_db_put
+
+        pct = payload.get("value")
+        if pct is None or not isinstance(pct, (int, float)):
+            return
+        pct = int(pct)
+        if not (0 <= pct <= 100):
+            return
+
+        context = payload.get("context", {})
+        slurm_job_id = context.get("slurm_job_id", "")
+
+        run = get_run_by_uuid(run_uuid)
+        if not run:
+            return
+        cluster = run.get("cluster", "")
+
+        job_ids = [slurm_job_id] if slurm_job_id and slurm_job_id != "unknown" else []
+        job_ids.append(f"sdk-{run_uuid[:12]}")
+
+        for jid in job_ids:
+            _cache_set(_progress_cache, (cluster, jid), pct)
+            _cache_set(_progress_source_cache, (cluster, jid), "sdk monitor")
+            try:
+                cache_db_put("progress", f"{cluster}:{jid}", pct, PROGRESS_TTL_SEC)
+                cache_db_put("progress_source", f"{cluster}:{jid}", "sdk monitor", PROGRESS_TTL_SEC)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def _ingest_gpu_telemetry(run_uuid, payload):
