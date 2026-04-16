@@ -1875,6 +1875,30 @@ def api_logbook_delete(project, entry_id):
     return jsonify(result)
 
 
+@api.route("/api/logbook/<project>/entries/<int:entry_id>/export/docx")
+def api_logbook_export_docx(project, entry_id):
+    import io
+    from flask import send_file
+    from .docx_export import export_entry_docx
+    entry = _lb_get(project, entry_id)
+    if entry.get("status") == "error":
+        return jsonify(entry), 404
+    try:
+        docx_bytes = export_entry_docx(project, entry)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(exc)}), 500
+    safe_title = re.sub(r'[^\w\s\-]', '', entry.get("title", "export"))[:80].strip() or "export"
+    filename = f"{safe_title}.docx"
+    return send_file(
+        io.BytesIO(docx_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
 @api.route("/api/logbook/search")
 def api_logbook_search():
     q = request.args.get("q", "")

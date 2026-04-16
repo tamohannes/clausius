@@ -364,7 +364,8 @@ async function openLogbookEntry(entryId, opts = {}) {
           <button class="btn lb-present-toggle${_lbPresentMode ? ' active' : ''}" onclick="toggleLogbookPresentMode()" title="Open this entry in present mode">${_presentModeButtonLabel()}</button>
           ${typeBadge}
           <span style="flex:1"></span>
-          <span class="lb-export-hint" onclick="exportEntryHtml()" title="Export as HTML — then ⌘S to save">${_exportShortcutLabel()} export</span>
+          <span class="lb-export-hint" onclick="exportEntryDocx()" title="Export as Word document (.docx)">docx</span>
+          <span class="lb-export-hint" onclick="exportEntryHtml()" title="Export as HTML — then ⌘S to save">${_exportShortcutLabel()} html</span>
           <button class="btn" onclick="editLogbookEntry(${entry.id})">edit</button>
           <button class="btn" onclick="deleteLogbookEntry(${entry.id})" style="color:var(--red)">delete</button>
         </div>
@@ -694,6 +695,13 @@ function updateIcon() {
   }
 }
 
+
+function exportEntryDocx() {
+  if (!_lbCurrentEntry) { toast('No entry loaded', 'error'); return; }
+  const e = _lbCurrentEntry;
+  window.location.href = `/api/logbook/${encodeURIComponent(_lbProject)}/entries/${e.id}/export/docx`;
+  toast('Downloading Word document…');
+}
 
 // ── Editor ──────────────────────────────────────────────────────────────────
 
